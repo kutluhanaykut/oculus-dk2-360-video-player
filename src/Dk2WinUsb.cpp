@@ -88,17 +88,21 @@ bool Dk2WinUsb::connectWinUsb()
     HDEVINFO deviceInfoSet = SetupDiGetClassDevs(
         &kUsbDeviceInterfaceGuid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
     if (deviceInfoSet == INVALID_HANDLE_VALUE) {
-        log::warning("Dk2WinUsb(WinUSB): SetupDiGetClassDevs basarisiz oldu.");
+        const DWORD err = GetLastError();
+        log::warning("Dk2WinUsb(WinUSB): SetupDiGetClassDevs basarisiz oldu, hata=" + std::to_string(err));
         return false;
     }
 
     SP_DEVICE_INTERFACE_DATA interfaceData {};
     interfaceData.cbSize = sizeof(interfaceData);
 
+    int enumeratedCount = 0;
+    int dk2CandidateCount = 0;
     bool found = false;
     for (int deviceIndex = 0;
          SetupDiEnumDeviceInterfaces(deviceInfoSet, nullptr, &kUsbDeviceInterfaceGuid, deviceIndex, &interfaceData);
          ++deviceIndex) {
+        ++enumeratedCount;
         DWORD requiredSize = 0;
         if (!SetupDiGetDeviceInterfaceDetailW(deviceInfoSet, &interfaceData, nullptr, 0, &requiredSize, nullptr)
             || requiredSize == 0) {
@@ -136,6 +140,11 @@ bool Dk2WinUsb::connectWinUsb()
             continue;
         }
 
+        log::info("Dk2WinUsb(WinUSB): USB aygit #" + std::to_string(deviceIndex)
+            + " yol=" + wideToUtf8(detailData->DevicePath)
+            + " VID=0x" + std::to_string(descriptor.idVendor)
+            + " PID=0x" + std::to_string(descriptor.idProduct));
+
         const bool vendorMatch = descriptor.idVendor == kOculusVendorId;
         const bool productMatch = std::find(std::begin(kDk2ProductIds), std::end(kDk2ProductIds),
             descriptor.idProduct) != std::end(kDk2ProductIds);
@@ -146,7 +155,11 @@ bool Dk2WinUsb::connectWinUsb()
             log::info("Dk2WinUsb(WinUSB): DK2 bulundu, VID=0x2833 PID=0x"
                 + std::to_string(descriptor.idProduct) + " yol=" + devicePath_);
             found = true;
+            ++dk2CandidateCount;
             break;
+        }
+        if (descriptor.idVendor == kOculusVendorId) {
+            ++dk2CandidateCount;
         }
 
         WinUsb_Free(winUsbHandle);
@@ -155,8 +168,16 @@ bool Dk2WinUsb::connectWinUsb()
 
     SetupDiDestroyDeviceInfoList(deviceInfoSet);
 
+    if (enumeratedCount == 0) {
+        log::warning("Dk2WinUsb(WinUSB): SetupAPI HICBIR USB cihazi bulamadi. "
+            "DK2 muhtemelen farkli bir aygit sinifinda (HIDClass, I2C, ozel sürücü). "
+            "Windows Aygıt Yöneticisi'nde DK2'yi kontrol edin.");
+    } else {
+        log::info("Dk2WinUsb(WinUSB): Toplam " + std::to_string(enumeratedCount)
+            + " USB cihaz listelendi, Oculus VID'li " + std::to_string(dk2CandidateCount) + " adet.");
+    }
     if (!found) {
-        log::info("Dk2WinUsb(WinUSB): SetupAPI DK2 bulamadi; hidapi yolu denenecek.");
+        log::info("Dk2WinUsb(WinUSB): DK2 bulunamadi; hidapi yolu denenecek.");
         return false;
     }
 

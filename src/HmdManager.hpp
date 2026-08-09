@@ -1,6 +1,10 @@
 #pragma once
 
+#include "Dk2WinUsb.hpp"
+#include "Projection.hpp"
+
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -33,7 +37,7 @@ struct HmdDisplayInfo {
 
 class HmdManager {
 public:
-    HmdManager() = default;
+    HmdManager();
     ~HmdManager();
 
     HmdManager(const HmdManager&) = delete;
@@ -51,20 +55,24 @@ public:
     [[nodiscard]] const HmdDeviceInfo* activeDevice() const noexcept;
     [[nodiscard]] const HmdDisplayInfo& displayInfo() const noexcept;
     [[nodiscard]] const std::string& lastError() const noexcept;
+    [[nodiscard]] const std::string& activeBackend() const noexcept;
 
 private:
-    void readDisplayInfo();
+    bool initializeOpenHmd(std::string& error);
+    void shutdownOpenHmd();
+    void applyDefaults(HmdDisplayInfo& display) const;
 
+    std::unique_ptr<Dk2WinUsb> winUsbDk2_;
     ohmd_context* context_ {nullptr};
     ohmd_device* device_ {nullptr};
     std::vector<HmdDeviceInfo> devices_;
     int activeDeviceVectorIndex_ {-1};
     HmdDisplayInfo displayInfo_;
-    glm::quat rawOrientation_ {1.0F, 0.0F, 0.0F, 0.0F};
-    glm::quat calibration_ {1.0F, 0.0F, 0.0F, 0.0F};
     glm::quat orientation_ {1.0F, 0.0F, 0.0F, 0.0F};
     bool recenterPending_ {true};
+    bool openHmdActive_ {false};
     std::string lastError_;
+    std::string activeBackend_ {"Yok"};
 };
 
 } // namespace dk2vr

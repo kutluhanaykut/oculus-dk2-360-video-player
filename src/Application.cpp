@@ -521,13 +521,13 @@ void Application::drawDevicePanel()
         const HmdDeviceInfo* device = hmd_.activeDevice();
         const HmdDisplayInfo& display = hmd_.displayInfo();
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.38F, 0.95F, 0.55F, 1.0F));
-        ImGui::Text("Dahili jiroskop: BAGLI");
+        ImGui::Text("Dahili jiroskop: BAGLI (%s)", hmd_.activeBackend().c_str());
         ImGui::PopStyleColor();
         if (device != nullptr) {
             ImGui::SameLine();
             ImGui::TextDisabled("%s %s", device->vendor.c_str(), device->product.c_str());
         }
-        ImGui::TextDisabled("OpenHMD panel bilgisi: %d x %d, FOV %.1f",
+        ImGui::TextDisabled("Panel bilgisi: %d x %d, FOV %.1f",
             display.horizontalResolution, display.verticalResolution, display.fovDegrees);
     } else {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.62F, 0.20F, 1.0F));

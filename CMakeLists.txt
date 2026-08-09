@@ -155,6 +155,7 @@ set(DK2VR_SOURCES
     src/main.cpp
     src/Application.cpp
     src/HmdManager.cpp
+    src/Dk2WinUsb.cpp
     src/Renderer.cpp
     src/VideoPlayer.cpp
     src/VlcApi.cpp
@@ -185,6 +186,8 @@ target_link_libraries(DK2VRPlayer PRIVATE
     hidapi::hidapi
     comdlg32
     shell32
+    winusb
+    setupapi
 )
 target_compile_definitions(DK2VRPlayer PRIVATE
     NOMINMAX

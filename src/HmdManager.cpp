@@ -1,5 +1,6 @@
 #include "HmdManager.hpp"
 
+#include "Dk2WinUsb.hpp"
 #include "Logger.hpp"
 
 #include <openhmd.h>
@@ -29,6 +30,11 @@ bool finiteQuaternion(const glm::quat& value)
 
 } // namespace
 
+HmdManager::HmdManager()
+    : winUsbDk2_(std::make_unique<Dk2WinUsb>())
+{
+}
+
 HmdManager::~HmdManager()
 {
     shutdown();
@@ -37,9 +43,58 @@ HmdManager::~HmdManager()
 bool HmdManager::initialize(std::string& error)
 {
     shutdown();
-    // hidapi 0.13+ requires hid_init() before hid_enumerate() returns real
-    // data. OpenHMD 0.3's own init does not call it, so we bootstrap the USB
-    // layer here. Failures are non-fatal on some platforms.
+    displayInfo_ = HmdDisplayInfo {};
+    applyDefaults(displayInfo_);
+
+    if (winUsbDk2_->connect()) {
+        activeBackend_ = "WinUSB (SetupAPI)";
+        orientation_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
+        recenterPending_ = true;
+        lastError_.clear();
+        log::info("DK2 jiroskopu " + activeBackend_ + " uzerinden acildi.");
+        return true;
+    }
+
+    if (initializeOpenHmd(error)) {
+        activeBackend_ = "OpenHMD";
+        orientation_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
+        recenterPending_ = true;
+        lastError_.clear();
+        return true;
+    }
+
+    activeBackend_ = "Yok";
+    return false;
+}
+
+void HmdManager::shutdown()
+{
+    shutdownOpenHmd();
+    if (winUsbDk2_ != nullptr) {
+        winUsbDk2_->disconnect();
+    }
+    devices_.clear();
+    activeDeviceVectorIndex_ = -1;
+    orientation_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
+    activeBackend_ = "Yok";
+}
+
+void HmdManager::applyDefaults(HmdDisplayInfo& display) const
+{
+    // DK2 published optics; the 0.8 driver does not change panel geometry.
+    display.horizontalResolution = 1920;
+    display.verticalResolution = 1080;
+    display.horizontalSizeMeters = 0.12576F;
+    display.verticalSizeMeters = 0.07074F;
+    display.lensSeparationMeters = 0.0635F;
+    display.fovDegrees = 100.0F;
+    display.aspectRatio = 0.888889F;
+    display.ipdMeters = 0.064F;
+    display.distortion = {1.0F, 0.22F, 0.24F, 0.0F, 0.0F, 0.0F};
+}
+
+bool HmdManager::initializeOpenHmd(std::string& error)
+{
     const int hidInitResult = hid_init();
     if (hidInitResult != 0) {
         log::warning("hid_init() sifir dondurmedi; OpenHMD tarama yine denenecek.");
@@ -58,10 +113,11 @@ bool HmdManager::initialize(std::string& error)
             error = "OpenHMD aygit taramasi basarisiz.";
         }
         lastError_ = error;
+        ohmd_ctx_destroy(context_);
+        context_ = nullptr;
         return false;
     }
     if (count == 0) {
-        // Some USB stacks need a moment to publish descriptors; retry once.
         SDL_Delay(200);
         count = ohmd_ctx_probe(context_);
     }
@@ -85,10 +141,6 @@ bool HmdManager::initialize(std::string& error)
                    << " urun='" << product << "'";
         log::info(deviceLine.str());
 
-        // OpenHMD 0.3 reports DK2 as OHMD_DEVICE_CLASS_HMD with
-        // OHMD_DEVICE_FLAGS_ROTATIONAL_TRACKING. We accept that combination,
-        // but we also keep generic trackers (e.g. some community drivers
-        // advertise the DK2 as a generic tracker first) as a fallback.
         const bool isHmd = deviceClass == OHMD_DEVICE_CLASS_HMD;
         const bool isRiftFamily = product.find("Rift") != std::string::npos
             || product.find("DK2") != std::string::npos
@@ -123,9 +175,10 @@ bool HmdManager::initialize(std::string& error)
             + " aygit gordu; hicbirinde Oculus/Rift/DK2 ismi yok. "
               "Windows'un DK2 USB aygitini WinUSB veya libusb-win32 ile eslediginden "
               "emin olun (hidapi Windows HID surucusu DK2 izleme cihazini acamayabilir).";
-        error = "Oculus Rift DK2 bulunamadi.";
         lastError_ = detail;
         log::warning(detail);
+        ohmd_ctx_destroy(context_);
+        context_ = nullptr;
         return false;
     }
 
@@ -137,17 +190,46 @@ bool HmdManager::initialize(std::string& error)
             error = "DK2 OpenHMD ile acilamadi.";
         }
         lastError_ = error;
+        ohmd_ctx_destroy(context_);
+        context_ = nullptr;
         return false;
     }
 
-    readDisplayInfo();
-    recenterPending_ = true;
-    lastError_.clear();
+    int horizontalResolution = 0;
+    int verticalResolution = 0;
+    ohmd_device_geti(device_, OHMD_SCREEN_HORIZONTAL_RESOLUTION, &horizontalResolution);
+    ohmd_device_geti(device_, OHMD_SCREEN_VERTICAL_RESOLUTION, &verticalResolution);
+    if (horizontalResolution > 0 && verticalResolution > 0) {
+        displayInfo_.horizontalResolution = horizontalResolution;
+        displayInfo_.verticalResolution = verticalResolution;
+    }
+    ohmd_device_getf(device_, OHMD_SCREEN_HORIZONTAL_SIZE, &displayInfo_.horizontalSizeMeters);
+    ohmd_device_getf(device_, OHMD_SCREEN_VERTICAL_SIZE, &displayInfo_.verticalSizeMeters);
+    ohmd_device_getf(device_, OHMD_LENS_HORIZONTAL_SEPARATION, &displayInfo_.lensSeparationMeters);
+    ohmd_device_getf(device_, OHMD_LEFT_EYE_FOV, &displayInfo_.fovDegrees);
+    ohmd_device_getf(device_, OHMD_LEFT_EYE_ASPECT_RATIO, &displayInfo_.aspectRatio);
+    ohmd_device_getf(device_, OHMD_EYE_IPD, &displayInfo_.ipdMeters);
+    ohmd_device_getf(device_, OHMD_DISTORTION_K, displayInfo_.distortion.data());
+
+    if (displayInfo_.horizontalResolution <= 0 || displayInfo_.verticalResolution <= 0) {
+        displayInfo_.horizontalResolution = 1920;
+        displayInfo_.verticalResolution = 1080;
+    }
+    if (!std::isfinite(displayInfo_.fovDegrees) || displayInfo_.fovDegrees < 60.0F
+        || displayInfo_.fovDegrees > 140.0F) {
+        displayInfo_.fovDegrees = 100.0F;
+    }
+    if (!std::isfinite(displayInfo_.ipdMeters) || displayInfo_.ipdMeters < 0.04F
+        || displayInfo_.ipdMeters > 0.09F) {
+        displayInfo_.ipdMeters = 0.064F;
+    }
+
+    openHmdActive_ = true;
     log::info("OpenHMD jiroskop takibi baglandi: " + devices_[preferredVectorIndex].product);
     return true;
 }
 
-void HmdManager::shutdown()
+void HmdManager::shutdownOpenHmd()
 {
     if (device_ != nullptr) {
         ohmd_close_device(device_);
@@ -158,15 +240,15 @@ void HmdManager::shutdown()
         context_ = nullptr;
     }
     hid_exit();
-    devices_.clear();
-    activeDeviceVectorIndex_ = -1;
-    rawOrientation_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
-    calibration_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
-    orientation_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
+    openHmdActive_ = false;
 }
 
 void HmdManager::update()
 {
+    if (winUsbDk2_ != nullptr && winUsbDk2_->isConnected()) {
+        orientation_ = winUsbDk2_->orientation();
+        return;
+    }
     if (context_ == nullptr || device_ == nullptr) {
         return;
     }
@@ -182,28 +264,36 @@ void HmdManager::update()
     if (!finiteQuaternion(candidate)) {
         return;
     }
-    rawOrientation_ = glm::normalize(candidate);
+    const glm::quat normalized = glm::normalize(candidate);
     if (recenterPending_) {
-        calibration_ = glm::inverse(rawOrientation_);
+        if (winUsbDk2_ != nullptr) {
+            winUsbDk2_->recenter();
+        }
         recenterPending_ = false;
     }
-    orientation_ = glm::normalize(calibration_ * rawOrientation_);
+    orientation_ = normalized;
 }
 
 void HmdManager::recenter()
 {
     recenterPending_ = true;
+    if (winUsbDk2_ != nullptr && winUsbDk2_->isConnected()) {
+        winUsbDk2_->recenter();
+        recenterPending_ = false;
+    }
 }
 
 bool HmdManager::connected() const noexcept
 {
+    if (winUsbDk2_ != nullptr && winUsbDk2_->isConnected()) {
+        return true;
+    }
     return device_ != nullptr;
 }
 
 bool HmdManager::hasRotationalTracking() const noexcept
 {
-    const HmdDeviceInfo* info = activeDevice();
-    return info != nullptr && (info->flags & OHMD_DEVICE_FLAGS_ROTATIONAL_TRACKING) != 0;
+    return connected();
 }
 
 const glm::quat& HmdManager::orientation() const noexcept
@@ -235,38 +325,9 @@ const std::string& HmdManager::lastError() const noexcept
     return lastError_;
 }
 
-void HmdManager::readDisplayInfo()
+const std::string& HmdManager::activeBackend() const noexcept
 {
-    if (device_ == nullptr) {
-        return;
-    }
-    ohmd_device_geti(device_, OHMD_SCREEN_HORIZONTAL_RESOLUTION,
-        &displayInfo_.horizontalResolution);
-    ohmd_device_geti(device_, OHMD_SCREEN_VERTICAL_RESOLUTION,
-        &displayInfo_.verticalResolution);
-    ohmd_device_getf(device_, OHMD_SCREEN_HORIZONTAL_SIZE,
-        &displayInfo_.horizontalSizeMeters);
-    ohmd_device_getf(device_, OHMD_SCREEN_VERTICAL_SIZE,
-        &displayInfo_.verticalSizeMeters);
-    ohmd_device_getf(device_, OHMD_LENS_HORIZONTAL_SEPARATION,
-        &displayInfo_.lensSeparationMeters);
-    ohmd_device_getf(device_, OHMD_LEFT_EYE_FOV, &displayInfo_.fovDegrees);
-    ohmd_device_getf(device_, OHMD_LEFT_EYE_ASPECT_RATIO, &displayInfo_.aspectRatio);
-    ohmd_device_getf(device_, OHMD_EYE_IPD, &displayInfo_.ipdMeters);
-    ohmd_device_getf(device_, OHMD_DISTORTION_K, displayInfo_.distortion.data());
-
-    if (displayInfo_.horizontalResolution <= 0 || displayInfo_.verticalResolution <= 0) {
-        displayInfo_.horizontalResolution = 1920;
-        displayInfo_.verticalResolution = 1080;
-    }
-    if (!std::isfinite(displayInfo_.fovDegrees) || displayInfo_.fovDegrees < 60.0F
-        || displayInfo_.fovDegrees > 140.0F) {
-        displayInfo_.fovDegrees = 100.0F;
-    }
-    if (!std::isfinite(displayInfo_.ipdMeters) || displayInfo_.ipdMeters < 0.04F
-        || displayInfo_.ipdMeters > 0.09F) {
-        displayInfo_.ipdMeters = 0.064F;
-    }
+    return activeBackend_;
 }
 
 } // namespace dk2vr

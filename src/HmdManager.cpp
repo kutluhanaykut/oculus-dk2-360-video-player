@@ -3,9 +3,14 @@
 #include "Logger.hpp"
 
 #include <openhmd.h>
+#include <hidapi.h>
+#include <SDL.h>
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <ios>
+#include <sstream>
 
 namespace dk2vr {
 namespace {
@@ -32,6 +37,13 @@ HmdManager::~HmdManager()
 bool HmdManager::initialize(std::string& error)
 {
     shutdown();
+    // hidapi 0.13+ requires hid_init() before hid_enumerate() returns real
+    // data. OpenHMD 0.3's own init does not call it, so we bootstrap the USB
+    // layer here. Failures are non-fatal on some platforms.
+    const int hidInitResult = hid_init();
+    if (hidInitResult != 0) {
+        log::warning("hid_init() sifir dondurmedi; OpenHMD tarama yine denenecek.");
+    }
     context_ = ohmd_ctx_create();
     if (context_ == nullptr) {
         error = "OpenHMD context olusturulamadi.";
@@ -39,7 +51,7 @@ bool HmdManager::initialize(std::string& error)
         return false;
     }
 
-    const int count = ohmd_ctx_probe(context_);
+    int count = ohmd_ctx_probe(context_);
     if (count < 0) {
         error = safeString(ohmd_ctx_get_error(context_));
         if (error.empty()) {
@@ -48,39 +60,72 @@ bool HmdManager::initialize(std::string& error)
         lastError_ = error;
         return false;
     }
+    if (count == 0) {
+        // Some USB stacks need a moment to publish descriptors; retry once.
+        SDL_Delay(200);
+        count = ohmd_ctx_probe(context_);
+    }
+    log::info("OpenHMD ilk tarama tamamlandi: " + std::to_string(count) + " aygit.");
 
     int preferredVectorIndex = -1;
     for (int listIndex = 0; listIndex < count; ++listIndex) {
         int deviceClass = -1;
         int flags = 0;
-        if (ohmd_list_geti(context_, listIndex, OHMD_DEVICE_CLASS, &deviceClass) != OHMD_S_OK
-            || deviceClass != OHMD_DEVICE_CLASS_HMD) {
+        ohmd_list_geti(context_, listIndex, OHMD_DEVICE_CLASS, &deviceClass);
+        ohmd_list_geti(context_, listIndex, OHMD_DEVICE_FLAGS, &flags);
+        const std::string vendor = safeString(ohmd_list_gets(context_, listIndex, OHMD_VENDOR));
+        const std::string product = safeString(ohmd_list_gets(context_, listIndex, OHMD_PRODUCT));
+        const std::string path = safeString(ohmd_list_gets(context_, listIndex, OHMD_PATH));
+        std::ostringstream deviceLine;
+        deviceLine << "OpenHMD aygit #" << listIndex
+                   << " sinif=" << deviceClass
+                   << " bayrak=0x" << std::hex << std::setw(2)
+                   << std::setfill('0') << (flags & 0xFFFF) << std::dec
+                   << " uretici='" << vendor << "'"
+                   << " urun='" << product << "'";
+        log::info(deviceLine.str());
+
+        // OpenHMD 0.3 reports DK2 as OHMD_DEVICE_CLASS_HMD with
+        // OHMD_DEVICE_FLAGS_ROTATIONAL_TRACKING. We accept that combination,
+        // but we also keep generic trackers (e.g. some community drivers
+        // advertise the DK2 as a generic tracker first) as a fallback.
+        const bool isHmd = deviceClass == OHMD_DEVICE_CLASS_HMD;
+        const bool isRiftFamily = product.find("Rift") != std::string::npos
+            || product.find("DK2") != std::string::npos
+            || product.find("DK1") != std::string::npos
+            || vendor.find("Oculus") != std::string::npos
+            || vendor.find("Oculus VR") != std::string::npos;
+        if (!isHmd && !isRiftFamily) {
             continue;
         }
-        ohmd_list_geti(context_, listIndex, OHMD_DEVICE_FLAGS, &flags);
         if ((flags & OHMD_DEVICE_FLAGS_NULL_DEVICE) != 0) {
             continue;
         }
 
         HmdDeviceInfo info;
         info.listIndex = listIndex;
-        info.vendor = safeString(ohmd_list_gets(context_, listIndex, OHMD_VENDOR));
-        info.product = safeString(ohmd_list_gets(context_, listIndex, OHMD_PRODUCT));
-        info.path = safeString(ohmd_list_gets(context_, listIndex, OHMD_PATH));
+        info.vendor = vendor;
+        info.product = product;
+        info.path = path;
         info.flags = flags;
         devices_.push_back(std::move(info));
 
-        const std::string& name = devices_.back().product;
-        if (preferredVectorIndex < 0 || name.find("Rift DK2") != std::string::npos
-            || name.find("DK2") != std::string::npos) {
+        if (preferredVectorIndex < 0
+            || product.find("DK2") != std::string::npos
+            || product.find("Rift DK2") != std::string::npos
+            || vendor.find("Oculus") != std::string::npos) {
             preferredVectorIndex = static_cast<int>(devices_.size()) - 1;
         }
     }
 
     if (preferredVectorIndex < 0) {
-        error = "Oculus Rift DK2 bulunamadi. USB baglantisini ve OpenHMD erisimini kontrol edin.";
-        lastError_ = error;
-        log::warning(error);
+        std::string detail = "OpenHMD " + std::to_string(count)
+            + " aygit gordu; hicbirinde Oculus/Rift/DK2 ismi yok. "
+              "Windows'un DK2 USB aygitini WinUSB veya libusb-win32 ile eslediginden "
+              "emin olun (hidapi Windows HID surucusu DK2 izleme cihazini acamayabilir).";
+        error = "Oculus Rift DK2 bulunamadi.";
+        lastError_ = detail;
+        log::warning(detail);
         return false;
     }
 
@@ -112,6 +157,7 @@ void HmdManager::shutdown()
         ohmd_ctx_destroy(context_);
         context_ = nullptr;
     }
+    hid_exit();
     devices_.clear();
     activeDeviceVectorIndex_ = -1;
     rawOrientation_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);

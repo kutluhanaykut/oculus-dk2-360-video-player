@@ -182,6 +182,7 @@ target_link_libraries(DK2VRPlayer PRIVATE
     nlohmann_json::nlohmann_json
     imgui_sdl_opengl
     openhmd_dk2
+    hidapi::hidapi
     comdlg32
     shell32
 )

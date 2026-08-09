@@ -155,13 +155,18 @@ bool Application::initialize(std::string& error)
         renderSettings_.fovDegrees = display.fovDegrees;
         renderSettings_.screenWidthMeters = display.horizontalSizeMeters;
         renderSettings_.lensSeparationMeters = display.lensSeparationMeters;
-        if (std::isfinite(display.distortion[1]) && display.distortion[1] >= 0.0F
-            && display.distortion[1] <= 1.0F) {
-            renderSettings_.distortionK1 = display.distortion[1];
+        renderSettings_.ipdMeters = display.ipdMeters;
+        bool distortionValid = false;
+        for (std::size_t index = 0; index < display.distortion.size(); ++index) {
+            const float value = display.distortion[index];
+            if (std::isfinite(value) && std::abs(value) > 1e-4F) {
+                distortionValid = true;
+            }
+            renderSettings_.distortion[index] = value;
         }
-        if (std::isfinite(display.distortion[2]) && display.distortion[2] >= 0.0F
-            && display.distortion[2] <= 1.0F) {
-            renderSettings_.distortionK2 = display.distortion[2];
+        if (!distortionValid) {
+            // OpenHMD returned a zeroed array; fall back to well-known DK2 numbers.
+            renderSettings_.distortion = {1.0F, 0.22F, 0.24F, 0.0F, 0.0F, 0.0F};
         }
         setStatus("DK2 baglandi. Dahili jiroskop ile yon takibi hazir.");
     } else {
@@ -483,19 +488,23 @@ void Application::drawSettings()
     ImGui::Checkbox("Videoyu dikey cevir", &renderSettings_.flipVertical);
     if (renderSettings_.distortionEnabled) {
         ImGui::SetNextItemWidth(180.0F);
-        ImGui::SliderFloat("Distorsiyon K1", &renderSettings_.distortionK1, 0.0F, 0.5F, "%.3f");
+        ImGui::SliderFloat("K0 (scale)", &renderSettings_.distortion[0], 0.0F, 2.0F, "%.3f");
         ImGui::SetNextItemWidth(180.0F);
-        ImGui::SliderFloat("Distorsiyon K2", &renderSettings_.distortionK2, 0.0F, 0.5F, "%.3f");
+        ImGui::SliderFloat("K1 (r2)", &renderSettings_.distortion[1], 0.0F, 1.0F, "%.3f");
+        ImGui::SetNextItemWidth(180.0F);
+        ImGui::SliderFloat("K2 (r4)", &renderSettings_.distortion[2], 0.0F, 1.0F, "%.3f");
+        ImGui::SetNextItemWidth(180.0F);
+        ImGui::SliderFloat("K3 (r6)", &renderSettings_.distortion[3], -0.2F, 0.2F, "%.4f");
         ImGui::SetNextItemWidth(180.0F);
         ImGui::SliderFloat("Renk sapmasi", &renderSettings_.chromaticAberration, 0.0F, 0.03F, "%.4f");
     }
     if (ImGui::Button("DK2 varsayilan lens ayarlari")) {
         renderSettings_.fovDegrees = 100.0F;
-        renderSettings_.distortionK1 = 0.22F;
-        renderSettings_.distortionK2 = 0.24F;
+        renderSettings_.distortion = {1.0F, 0.22F, 0.24F, 0.0F, 0.0F, 0.0F};
         renderSettings_.chromaticAberration = 0.008F;
         renderSettings_.screenWidthMeters = 0.12576F;
         renderSettings_.lensSeparationMeters = 0.0635F;
+        renderSettings_.ipdMeters = 0.064F;
     }
 }
 

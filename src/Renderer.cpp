@@ -48,6 +48,17 @@ float lineAt(float value, float position, float width)
     return 1.0 - smoothstep(width, width * 2.0, abs(value - position));
 }
 
+vec3 skyGradient(float latitude)
+{
+    // 0 == south pole, 0.5 == horizon, 1 == north pole.
+    if (latitude < 0.5) {
+        return mix(vec3(0.015, 0.025, 0.045), vec3(0.18, 0.32, 0.48),
+            smoothstep(0.0, 0.5, latitude));
+    }
+    return mix(vec3(0.18, 0.32, 0.48), vec3(0.02, 0.04, 0.10),
+        smoothstep(0.5, 1.0, latitude));
+}
+
 void main()
 {
     vec2 uv = vUv;
@@ -66,14 +77,35 @@ void main()
     }
 
     // Calibration room shown until the first decoder frame arrives.
-    vec3 base = mix(vec3(0.025, 0.035, 0.055), vec3(0.08, 0.10, 0.14), uv.y);
-    float longitudeGrid = 1.0 - smoothstep(0.035, 0.065, abs(fract(uv.x * 24.0) - 0.5));
-    float latitudeGrid = 1.0 - smoothstep(0.035, 0.065, abs(fract(uv.y * 12.0) - 0.5));
-    base += vec3(0.10, 0.16, 0.22) * max(longitudeGrid, latitudeGrid);
-    base = mix(base, vec3(0.85, 0.12, 0.08), lineAt(uv.x, 0.5, 0.003));
-    base = mix(base, vec3(0.15, 0.65, 0.25), lineAt(uv.x, 0.25, 0.003));
-    base = mix(base, vec3(0.10, 0.35, 0.90), lineAt(uv.x, 0.75, 0.003));
-    base = mix(base, vec3(0.95, 0.75, 0.12), lineAt(uv.y, 0.5, 0.003));
+    vec3 base = skyGradient(uv.y);
+
+    // Perspective floor grid: latitude values near the horizon are far away.
+    float horizonDistance = abs(uv.y - 0.5) * 2.0;
+    float depth = 1.0 - smoothstep(0.0, 0.35, horizonDistance);
+    if (uv.y < 0.5 && depth > 0.0) {
+        // Floor: dark cool gradient with a green-tinted grid.
+        vec3 floorColor = mix(vec3(0.04, 0.07, 0.12), vec3(0.02, 0.04, 0.08), depth);
+        float longitudeGrid = 1.0 - smoothstep(0.02, 0.05, abs(fract(uv.x * 16.0) - 0.5));
+        float depthLine = 1.0 - smoothstep(0.02, 0.05, abs(fract(uv.y * 32.0) - 0.5));
+        float gridIntensity = max(longitudeGrid, depthLine) * (0.45 + 0.55 * depth);
+        floorColor += vec3(0.20, 0.45, 0.55) * gridIntensity;
+        base = mix(base, floorColor, depth);
+    }
+
+    // Soft horizon glow.
+    base += vec3(0.10, 0.18, 0.30) * (1.0 - smoothstep(0.0, 0.05, horizonDistance));
+
+    // Cardinal reference markers.
+    base = mix(base, vec3(0.95, 0.20, 0.20), lineAt(uv.x, 0.50, 0.0025));
+    base = mix(base, vec3(0.20, 0.85, 0.30), lineAt(uv.x, 0.25, 0.0025));
+    base = mix(base, vec3(0.20, 0.45, 0.95), lineAt(uv.x, 0.75, 0.0025));
+    base = mix(base, vec3(0.95, 0.78, 0.18), lineAt(uv.y, 0.50, 0.0025));
+    base = mix(base, vec3(0.85, 0.85, 0.85), lineAt(uv.y, 0.25, 0.0035));
+    base = mix(base, vec3(0.85, 0.85, 0.85), lineAt(uv.y, 0.75, 0.0035));
+
+    // Subtle vignette at the poles.
+    float poleFade = smoothstep(0.0, 0.06, uv.y) * (1.0 - smoothstep(0.94, 1.0, uv.y));
+    base *= mix(0.55, 1.0, poleFade);
     outColor = vec4(base, 1.0);
 }
 )glsl";
@@ -96,8 +128,12 @@ in vec2 vUv;
 out vec4 outColor;
 uniform sampler2D uLeftEye;
 uniform sampler2D uRightEye;
+uniform float uK0;
 uniform float uK1;
 uniform float uK2;
+uniform float uK3;
+uniform float uK4;
+uniform float uK5;
 uniform float uChromatic;
 uniform float uEyeAspect;
 uniform float uLensRatio;
@@ -135,8 +171,14 @@ void main()
         vec2 p = (localUv - vec2(lensCenterX, 0.5)) * 2.0;
         p.x *= uEyeAspect;
         radiusSquared = dot(p, p);
-        float factor = 1.0 + uK1 * radiusSquared + uK2 * radiusSquared * radiusSquared;
-        float fitScale = max(1.0 + uK1 + uK2, 0.25);
+        // 6-term radial distortion polynomial from OpenHMD's OHMD_DISTORTION_K.
+        // K0 is the base scale; K1..K3 are PanoTools-style coefficients.
+        float r2 = radiusSquared;
+        float r4 = r2 * r2;
+        float r6 = r4 * r2;
+        float factor = uK0 + uK1 * r2 + uK2 * r4 + uK3 * r6
+            + uK4 * r6 * r2 + uK5 * r6 * r4;
+        float fitScale = max(factor, 0.25);
         vec2 warped = p * factor / fitScale;
         warped.x /= uEyeAspect;
         sourceUv = vec2(0.5) + warped * 0.5;
@@ -441,8 +483,13 @@ void Renderer::renderVr(const int framebufferWidth, const int framebufferHeight,
     glBindTexture(GL_TEXTURE_2D, eyes_[1].colorTexture);
     glUniform1i(glGetUniformLocation(distortionProgram_, "uLeftEye"), 0);
     glUniform1i(glGetUniformLocation(distortionProgram_, "uRightEye"), 1);
-    glUniform1f(glGetUniformLocation(distortionProgram_, "uK1"), settings.distortionK1);
-    glUniform1f(glGetUniformLocation(distortionProgram_, "uK2"), settings.distortionK2);
+    const float* k = settings.distortion.data();
+    glUniform1f(glGetUniformLocation(distortionProgram_, "uK0"), k[0]);
+    glUniform1f(glGetUniformLocation(distortionProgram_, "uK1"), k[1]);
+    glUniform1f(glGetUniformLocation(distortionProgram_, "uK2"), k[2]);
+    glUniform1f(glGetUniformLocation(distortionProgram_, "uK3"), k[3]);
+    glUniform1f(glGetUniformLocation(distortionProgram_, "uK4"), k[4]);
+    glUniform1f(glGetUniformLocation(distortionProgram_, "uK5"), k[5]);
     glUniform1f(glGetUniformLocation(distortionProgram_, "uChromatic"),
         settings.chromaticAberration);
     glUniform1f(glGetUniformLocation(distortionProgram_, "uEyeAspect"),

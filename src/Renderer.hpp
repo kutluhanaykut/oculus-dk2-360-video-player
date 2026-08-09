@@ -2,6 +2,7 @@
 
 #include "Projection.hpp"
 
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -12,11 +13,11 @@ namespace dk2vr {
 struct RenderSettings {
     ProjectionMode projection {ProjectionMode::Mono360};
     float fovDegrees {100.0F};
-    float distortionK1 {0.22F};
-    float distortionK2 {0.24F};
+    std::array<float, 6> distortion {1.0F, 0.22F, 0.24F, 0.0F, 0.0F, 0.0F};
     float chromaticAberration {0.008F};
     float screenWidthMeters {0.12576F};
     float lensSeparationMeters {0.0635F};
+    float ipdMeters {0.064F};
     bool distortionEnabled {true};
     bool flipVertical {false};
 };

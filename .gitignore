@@ -1,0 +1,22 @@
+# Build products
+/build/
+/out/
+/dist/
+
+# Downloaded binary SDK/tools
+/third_party/vlc/
+/third_party/yt-dlp.exe
+/third_party/downloads/
+
+# IDE and user state
+.vs/
+.vscode/settings.json
+*.user
+*.suo
+CMakeUserPresets.json
+imgui.ini
+DK2VRPlayer.log
+
+# OS files
+Thumbs.db
+Desktop.ini

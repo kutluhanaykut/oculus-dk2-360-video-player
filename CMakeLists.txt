@@ -95,9 +95,23 @@ target_include_directories(imgui_sdl_opengl PUBLIC
 )
 target_link_libraries(imgui_sdl_opengl PUBLIC SDL2::SDL2-static OpenGL::GL)
 
-# hidapi is OpenHMD's cross-platform USB HID transport.
+# hidapi is OpenHMD's cross-platform USB HID transport. We build it with the
+# libusb-1.0 backend enabled so that WinUSB-class DK2 devices exposed by the
+# "DK2 0.8 driver" become reachable from our application.
 set(HIDAPI_BUILD_HIDTEST OFF CACHE BOOL "" FORCE)
 set(HIDAPI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(HIDAPI_BUILD_LIBSHARDWARE ON CACHE BOOL "Build libusb-based hidapi implementation on Windows" FORCE)
+set(LIBUSB_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(LIBUSB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LIBUSB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(LIBUSB_USE_SYSTEM_LIBUSB OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    libusb
+    GIT_REPOSITORY https://github.com/libusb/libusb.git
+    GIT_TAG v1.0.27
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(libusb)
 FetchContent_Declare(
     hidapi
     GIT_REPOSITORY https://github.com/libusb/hidapi.git

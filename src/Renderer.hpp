@@ -10,8 +10,15 @@
 
 namespace dk2vr {
 
+enum class PreviewMode : std::int32_t {
+    Mono360 = 0,
+    SideBySideStereo = 1,
+    AnaglyphRedCyan = 2,
+};
+
 struct RenderSettings {
     ProjectionMode projection {ProjectionMode::Mono360};
+    PreviewMode previewMode {PreviewMode::Mono360};
     float fovDegrees {100.0F};
     std::array<float, 6> distortion {1.0F, 0.22F, 0.24F, 0.0F, 0.0F, 0.0F};
     float chromaticAberration {0.008F};
@@ -45,6 +52,12 @@ public:
         int framebufferHeight,
         const glm::quat& orientation,
         const RenderSettings& settings);
+    void renderMirror(
+        int framebufferWidth,
+        int framebufferHeight,
+        const glm::quat& orientation,
+        const RenderSettings& settings,
+        int targetEye);
 
     [[nodiscard]] bool initialized() const noexcept;
     [[nodiscard]] bool hasVideoFrame() const noexcept;
@@ -69,6 +82,24 @@ private:
         int height,
         const glm::quat& orientation,
         const RenderSettings& settings);
+    void renderAnaglyph(
+        int width,
+        int height,
+        const glm::quat& orientation,
+        const RenderSettings& settings);
+    void renderSideBySide(
+        int width,
+        int height,
+        const glm::quat& orientation,
+        const RenderSettings& settings,
+        const float halfWidth,
+        const float halfHeight);
+    void blitEye(
+        unsigned colorTexture,
+        int x,
+        int y,
+        int width,
+        int height);
 
     unsigned sphereProgram_ {0};
     unsigned distortionProgram_ {0};

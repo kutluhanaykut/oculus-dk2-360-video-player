@@ -442,12 +442,161 @@ void Renderer::renderPreview(const int framebufferWidth, const int framebufferHe
     if (!initialized() || framebufferWidth <= 0 || framebufferHeight <= 0) {
         return;
     }
+    if (settings.previewMode == PreviewMode::AnaglyphRedCyan) {
+        renderAnaglyph(framebufferWidth, framebufferHeight, orientation, settings);
+        return;
+    }
+    if (settings.previewMode == PreviewMode::SideBySideStereo) {
+        const int halfWidth = framebufferWidth / 2;
+        renderSideBySide(framebufferWidth, framebufferHeight, orientation, settings,
+            static_cast<float>(halfWidth), static_cast<float>(framebufferHeight));
+        return;
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, framebufferWidth, framebufferHeight);
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.008F, 0.012F, 0.02F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     renderSphereEye(0, framebufferWidth, framebufferHeight, orientation, settings);
+}
+
+void Renderer::renderAnaglyph(const int width, const int height,
+    const glm::quat& orientation, const RenderSettings& settings)
+{
+    const int eyeWidth = width;
+    const int eyeHeight = height;
+    if (!ensureEyeTargets(eyeWidth, eyeHeight)) {
+        return;
+    }
+
+    // Render the left eye into the red channel and the right eye into the
+    // green+blue channels. This produces a classic red/cyan anaglyph image
+    // that can be viewed with cheap 3D glasses on any monitor.
+    for (int eye = 0; eye < 2; ++eye) {
+        glBindFramebuffer(GL_FRAMEBUFFER, eyes_[eye].framebuffer);
+        glViewport(0, 0, eyeWidth, eyeHeight);
+        glEnable(GL_DEPTH_TEST);
+        if (eye == 0) {
+            glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+        } else {
+            glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+        }
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        renderSphereEye(eye, eyeWidth, eyeHeight, orientation, settings);
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, width, height);
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    const float halfWidth = static_cast<float>(width);
+    const float halfHeight = static_cast<float>(height);
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(0.0F, halfWidth, halfHeight, 0.0F, -1.0F, 1.0F);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE);
+
+    // Red channel from the left eye.
+    glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_TRUE);
+    blitEye(eyes_[0].colorTexture, 0, 0, width, height);
+
+    // Cyan (green+blue) channels from the right eye.
+    glColorMask(GL_FALSE, GL_TRUE, GL_TRUE, GL_TRUE);
+    blitEye(eyes_[1].colorTexture, 0, 0, width, height);
+
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDisable(GL_BLEND);
+
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    glPopMatrix();
+    (void)halfWidth;
+    (void)halfHeight;
+}
+
+void Renderer::renderSideBySide(const int width, const int height,
+    const glm::quat& orientation, const RenderSettings& settings,
+    const float halfWidth, const float halfHeight)
+{
+    (void)halfHeight;
+    const int halfW = static_cast<int>(halfWidth);
+    if (!ensureEyeTargets(halfW, height)) {
+        return;
+    }
+    for (int eye = 0; eye < 2; ++eye) {
+        glBindFramebuffer(GL_FRAMEBUFFER, eyes_[eye].framebuffer);
+        glViewport(0, 0, halfW, height);
+        glEnable(GL_DEPTH_TEST);
+        glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        renderSphereEye(eye, halfW, height, orientation, settings);
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, width, height);
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+    glClear(GL_COLOR_BUFFER_BIT);
+    blitEye(eyes_[0].colorTexture, 0, 0, halfW, height);
+    blitEye(eyes_[1].colorTexture, halfW, 0, width - halfW, height);
+}
+
+void Renderer::blitEye(const unsigned colorTexture, const int x, const int y,
+    const int width, const int height)
+{
+    if (colorTexture == 0) {
+        return;
+    }
+    glBindTexture(GL_TEXTURE_2D, colorTexture);
+    glEnable(GL_TEXTURE_2D);
+    glBegin(GL_QUADS);
+    const float u0 = 0.0F;
+    const float u1 = 1.0F;
+    const float v0 = 1.0F;
+    const float v1 = 0.0F;
+    glTexCoord2f(u0, v0); glVertex2i(x, y);
+    glTexCoord2f(u1, v0); glVertex2i(x + width, y);
+    glTexCoord2f(u1, v1); glVertex2i(x + width, y + height);
+    glTexCoord2f(u0, v1); glVertex2i(x, y + height);
+    glEnd();
+    glDisable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void Renderer::renderMirror(const int framebufferWidth, const int framebufferHeight,
+    const glm::quat& orientation, const RenderSettings& settings, const int targetEye)
+{
+    if (!initialized() || framebufferWidth <= 0 || framebufferHeight <= 0) {
+        return;
+    }
+    if (targetEye < 0 || targetEye > 1) {
+        return;
+    }
+    if (!ensureEyeTargets(framebufferWidth, framebufferHeight)) {
+        return;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, eyes_[targetEye].framebuffer);
+    glViewport(0, 0, framebufferWidth, framebufferHeight);
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    renderSphereEye(targetEye, framebufferWidth, framebufferHeight, orientation, settings);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, framebufferWidth, framebufferHeight);
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+    glClear(GL_COLOR_BUFFER_BIT);
+    blitEye(eyes_[targetEye].colorTexture, 0, 0, framebufferWidth, framebufferHeight);
 }
 
 void Renderer::renderVr(const int framebufferWidth, const int framebufferHeight,

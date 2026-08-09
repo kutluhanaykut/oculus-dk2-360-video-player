@@ -482,6 +482,13 @@ void Application::drawSettings()
             static_cast<int>(std::size(projectionNames)))) {
         renderSettings_.projection = static_cast<ProjectionMode>(projection);
     }
+    int previewMode = static_cast<int>(renderSettings_.previewMode);
+    constexpr const char* previewModeNames[] {"Tek goz (monitor)", "Side-by-side 3D", "Anaglif kirmizi/cyan"};
+    ImGui::SetNextItemWidth(220.0F);
+    if (ImGui::Combo("Onizleme modu", &previewMode, previewModeNames,
+            static_cast<int>(std::size(previewModeNames)))) {
+        renderSettings_.previewMode = static_cast<PreviewMode>(previewMode);
+    }
     ImGui::SetNextItemWidth(220.0F);
     ImGui::SliderFloat("Gorus alani", &renderSettings_.fovDegrees, 70.0F, 125.0F, "%.1f derece");
     ImGui::Checkbox("DK2 lens distorsiyon duzeltmesi", &renderSettings_.distortionEnabled);
@@ -572,6 +579,7 @@ void Application::drawDevicePanel()
         enterVrMode();
     }
     ImGui::TextWrapped("DK2, Windows'ta genisletilmis ekran olarak 1920x1080 yatay ve 75 Hz ayarlanmalidir. Harici konum kamerasi kullanilmaz; yalnizca gozlukteki IMU/jiroskop okunur.");
+    ImGui::TextWrapped("Windows 11 HDMI cikisini otomatik tanimiyorsa: NVIDIA/AMD kontrol panelinden 'Add display' deneyin; olmazsa spacedesk/Parsec/Sunlight gibi sanal ekran surucusu kurup masaustunu DK2'ye genisletin. Bu olmazsa 'Onizleme modu' kismindan 'Side-by-side 3D' veya 'Anaglif' secerek jiroskop takibiyle birlikte ana monitorden izleyebilirsiniz.");
 }
 
 void Application::startYouTubeResolution()

@@ -108,10 +108,18 @@ vec3 sampleEye(int eye, vec2 coordinate, float radiusSquared)
     vec2 radial = coordinate - vec2(0.5);
     vec2 redUv = vec2(0.5) + radial * (1.0 + uChromatic * radiusSquared);
     vec2 blueUv = vec2(0.5) + radial * (1.0 - uChromatic * radiusSquared);
-    sampler2D eyeTexture = eye == 0 ? uLeftEye : uRightEye;
-    float red = texture(eyeTexture, redUv).r;
-    float green = texture(eyeTexture, coordinate).g;
-    float blue = texture(eyeTexture, blueUv).b;
+    float red;
+    float green;
+    float blue;
+    if (eye == 0) {
+        red = texture(uLeftEye, redUv).r;
+        green = texture(uLeftEye, coordinate).g;
+        blue = texture(uLeftEye, blueUv).b;
+    } else {
+        red = texture(uRightEye, redUv).r;
+        green = texture(uRightEye, coordinate).g;
+        blue = texture(uRightEye, blueUv).b;
+    }
     return vec3(red, green, blue);
 }
 

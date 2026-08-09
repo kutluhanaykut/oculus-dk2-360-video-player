@@ -7,12 +7,12 @@
 #include <thread>
 
 #include <glm/gtc/quaternion.hpp>
+#include <hidapi.h>
 
 namespace dk2vr {
 
-// Direct WinUSB access for the Oculus Rift DK2 headset. This bypasses both
-// hidapi and OpenHMD so that the IMU can be read even when the DK2 0.8 driver
-// exposes the tracker as a WinUSB interface instead of a HID-class device.
+enum class Dk2Backend { None, WinUsb, HidApi };
+
 class Dk2WinUsb {
 public:
     Dk2WinUsb();
@@ -21,23 +21,29 @@ public:
     Dk2WinUsb(const Dk2WinUsb&) = delete;
     Dk2WinUsb& operator=(const Dk2WinUsb&) = delete;
 
-    [[nodiscard]] bool connect();
+    bool connect();
     void disconnect();
-    [[nodiscard]] bool isConnected() const noexcept;
-    [[nodiscard]] const std::string& devicePath() const noexcept;
+    bool isConnected() const noexcept;
+    const std::string& devicePath() const noexcept;
+    Dk2Backend backend() const noexcept;
 
     void recenter();
 
-    // Snapshot the latest orientation provided by the DK2's onboard fusion.
-    [[nodiscard]] glm::quat orientation() const;
+    glm::quat orientation() const;
 
 private:
+    bool connectWinUsb();
+    bool connectHidApi();
     void readerLoop();
     void parseImuPacket(const std::uint8_t* data, std::size_t size);
+    static std::string wideToUtf8(const std::wstring& source);
+    static std::string narrowToUtf8(const char* source);
 
     void* deviceHandle_ {nullptr};
     void* winUsbHandle_ {nullptr};
+    hid_device* hidHandle_ {nullptr};
     std::string devicePath_;
+    Dk2Backend activeBackend_ {Dk2Backend::None};
 
     std::atomic<bool> connected_ {false};
     std::atomic<bool> stopRequested_ {false};

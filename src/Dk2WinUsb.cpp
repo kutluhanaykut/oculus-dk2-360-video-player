@@ -6,24 +6,27 @@
 #include <setupapi.h>
 #include <winusb.h>
 #include <usbiodef.h>
+#include <hidsdi.h>
+#include <hidapi.h>
 
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace dk2vr {
 namespace {
 
-// {A5DCBF10-6530-11D2-901F-00C04FB951ED} is GUID_DEVINTERFACE_USB_DEVICE.
+// {A5DCBF10-6530-11D2-901F-00C04FB951ED} is GUID_DEVINTERFACE_USB_DEVICE
+// (enumerates every USB interface, WinUSB or HID-class).
 const GUID kUsbDeviceInterfaceGuid = {
     0xA5DCBF10, 0x6530, 0x11D2, {0x90, 0x1F, 0x00, 0xC0, 0x4F, 0xB9, 0x51, 0xED}};
 
 constexpr std::uint16_t kOculusVendorId = 0x2833;
 constexpr std::uint16_t kDk2ProductIds[] = {0x0021, 0x2021};
-
 constexpr std::uint8_t kDk2ImuEndpoint = 0x81;
 
-bool wideToUtf8(const std::wstring& source, std::string& destination)
+bool utf8FromWide(const std::wstring& source, std::string& destination)
 {
     if (source.empty()) {
         destination.clear();
@@ -40,6 +43,21 @@ bool wideToUtf8(const std::wstring& source, std::string& destination)
 
 } // namespace
 
+std::string Dk2WinUsb::wideToUtf8(const std::wstring& source)
+{
+    std::string out;
+    utf8FromWide(source, out);
+    return out;
+}
+
+std::string Dk2WinUsb::narrowToUtf8(const char* source)
+{
+    if (source == nullptr) {
+        return {};
+    }
+    return std::string(source);
+}
+
 Dk2WinUsb::Dk2WinUsb() = default;
 
 Dk2WinUsb::~Dk2WinUsb()
@@ -52,6 +70,17 @@ bool Dk2WinUsb::connect()
     if (connected_) {
         return true;
     }
+    if (connectWinUsb()) {
+        return true;
+    }
+    if (connectHidApi()) {
+        return true;
+    }
+    return false;
+}
+
+bool Dk2WinUsb::connectWinUsb()
+{
     devicePath_.clear();
     deviceHandle_ = nullptr;
     winUsbHandle_ = nullptr;
@@ -59,7 +88,7 @@ bool Dk2WinUsb::connect()
     HDEVINFO deviceInfoSet = SetupDiGetClassDevs(
         &kUsbDeviceInterfaceGuid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
     if (deviceInfoSet == INVALID_HANDLE_VALUE) {
-        log::warning("Dk2WinUsb: SetupDiGetClassDevs basarisiz oldu.");
+        log::warning("Dk2WinUsb(WinUSB): SetupDiGetClassDevs basarisiz oldu.");
         return false;
     }
 
@@ -113,9 +142,9 @@ bool Dk2WinUsb::connect()
         if (vendorMatch && productMatch) {
             deviceHandle_ = deviceHandle;
             winUsbHandle_ = winUsbHandle;
-            wideToUtf8(detailData->DevicePath, devicePath_);
-            log::info("Dk2WinUsb: DK2 bulundu, VID=0x2833 PID=0x" + std::to_string(descriptor.idProduct)
-                + " yol=" + devicePath_);
+            devicePath_ = wideToUtf8(detailData->DevicePath);
+            log::info("Dk2WinUsb(WinUSB): DK2 bulundu, VID=0x2833 PID=0x"
+                + std::to_string(descriptor.idProduct) + " yol=" + devicePath_);
             found = true;
             break;
         }
@@ -127,10 +156,57 @@ bool Dk2WinUsb::connect()
     SetupDiDestroyDeviceInfoList(deviceInfoSet);
 
     if (!found) {
-        log::warning("Dk2WinUsb: SetupAPI DK2 bulamadi (WinUSB arayuzu bekleniyor).");
+        log::info("Dk2WinUsb(WinUSB): SetupAPI DK2 bulamadi; hidapi yolu denenecek.");
         return false;
     }
 
+    activeBackend_ = Dk2Backend::WinUsb;
+    connected_ = true;
+    stopRequested_ = false;
+    readerThread_ = std::thread(&Dk2WinUsb::readerLoop, this);
+    return true;
+}
+
+bool Dk2WinUsb::connectHidApi()
+{
+    hid_device_info* devices = hid_enumerate(0, 0);
+    if (devices == nullptr) {
+        log::warning("Dk2WinUsb(hidapi): hid_enumerate bos dondu.");
+        return false;
+    }
+
+    hid_device_info* match = nullptr;
+    for (hid_device_info* current = devices; current != nullptr; current = current->next) {
+        if (current->vendor_id != kOculusVendorId) {
+            continue;
+        }
+        if (std::find(std::begin(kDk2ProductIds), std::end(kDk2ProductIds),
+            current->product_id) == std::end(kDk2ProductIds)) {
+            continue;
+        }
+        match = current;
+        break;
+    }
+
+    if (match == nullptr) {
+        log::info("Dk2WinUsb(hidapi): Oculus/Rift/DK2 isimli HID aygiti bulunamadi.");
+        hid_free_enumeration(devices);
+        return false;
+    }
+
+    hid_device* handle = hid_open_path(match->path);
+    hid_free_enumeration(devices);
+    if (handle == nullptr) {
+        const wchar_t* err = hid_error(nullptr);
+        log::warning(std::string("Dk2WinUsb(hidapi): hid_open_path basarisiz oldu: ")
+            + (err != nullptr ? wideToUtf8(err) : std::string {}));
+        return false;
+    }
+
+    hidHandle_ = handle;
+    devicePath_ = narrowToUtf8(match->path);
+    log::info("Dk2WinUsb(hidapi): DK2 acildi, yol=" + devicePath_);
+    activeBackend_ = Dk2Backend::HidApi;
     connected_ = true;
     stopRequested_ = false;
     readerThread_ = std::thread(&Dk2WinUsb::readerLoop, this);
@@ -151,8 +227,13 @@ void Dk2WinUsb::disconnect()
         CloseHandle(static_cast<HANDLE>(deviceHandle_));
         deviceHandle_ = nullptr;
     }
+    if (hidHandle_ != nullptr) {
+        hid_close(static_cast<hid_device*>(hidHandle_));
+        hidHandle_ = nullptr;
+    }
     devicePath_.clear();
     connected_ = false;
+    activeBackend_ = Dk2Backend::None;
 }
 
 bool Dk2WinUsb::isConnected() const noexcept
@@ -163,6 +244,11 @@ bool Dk2WinUsb::isConnected() const noexcept
 const std::string& Dk2WinUsb::devicePath() const noexcept
 {
     return devicePath_;
+}
+
+Dk2Backend Dk2WinUsb::backend() const noexcept
+{
+    return activeBackend_;
 }
 
 void Dk2WinUsb::recenter()
@@ -179,34 +265,43 @@ glm::quat Dk2WinUsb::orientation() const
 
 void Dk2WinUsb::readerLoop()
 {
-    while (!stopRequested_ && winUsbHandle_ != nullptr) {
-        std::uint8_t buffer[64] {};
-        unsigned long bytesRead = 0;
-        const BOOL ok = WinUsb_ReadPipe(static_cast<WINUSB_INTERFACE_HANDLE>(winUsbHandle_),
-            kDk2ImuEndpoint, buffer, sizeof(buffer), &bytesRead, nullptr);
-        if (!ok) {
-            const DWORD error = GetLastError();
-            if (error == ERROR_SEM_TIMEOUT || error == ERROR_IO_INCOMPLETE
-                || error == WAIT_TIMEOUT) {
-                continue;
+    std::uint8_t buffer[64] {};
+    while (!stopRequested_) {
+        if (activeBackend_ == Dk2Backend::WinUsb && winUsbHandle_ != nullptr) {
+            unsigned long bytesRead = 0;
+            const BOOL ok = WinUsb_ReadPipe(static_cast<WINUSB_INTERFACE_HANDLE>(winUsbHandle_),
+                kDk2ImuEndpoint, buffer, sizeof(buffer), &bytesRead, nullptr);
+            if (!ok) {
+                const DWORD error = GetLastError();
+                if (error != ERROR_SEM_TIMEOUT && error != ERROR_IO_INCOMPLETE
+                    && error != WAIT_TIMEOUT) {
+                    log::warning("Dk2WinUsb: WinUsb_ReadPipe basarisiz oldu, hata="
+                        + std::to_string(error));
+                    break;
+                }
+            } else if (bytesRead > 0) {
+                parseImuPacket(buffer, bytesRead);
             }
-            log::warning("Dk2WinUsb: WinUsb_ReadPipe basarisiz oldu, hata=" + std::to_string(error));
+        } else if (activeBackend_ == Dk2Backend::HidApi && hidHandle_ != nullptr) {
+            const int bytesRead = hid_read(static_cast<hid_device*>(hidHandle_), buffer, sizeof(buffer));
+            if (bytesRead > 0) {
+                parseImuPacket(buffer, static_cast<std::size_t>(bytesRead));
+            } else if (bytesRead < 0) {
+                const wchar_t* err = hid_error(static_cast<hid_device*>(hidHandle_));
+                log::warning(std::string("Dk2WinUsb: hid_read basarisiz oldu: ")
+                    + (err != nullptr ? wideToUtf8(err) : std::string {}));
+                break;
+            }
+        } else {
             break;
         }
-        if (bytesRead > 0) {
-            parseImuPacket(buffer, bytesRead);
-        }
+        Sleep(1);
     }
     log::info("Dk2WinUsb: okuyucu dongusu sona erdi.");
 }
 
 void Dk2WinUsb::parseImuPacket(const std::uint8_t* data, const std::size_t size)
 {
-    // The DK2 IMU report is 26 bytes. Byte 0 is the report ID (0x0B for
-    // sensors) and byte 1 is a sample counter. Bytes 2-7 carry the fused
-    // yaw/pitch/roll (int16, scaled by 0.002 radians) which is what we use
-    // for orientation. The remaining bytes carry gyro, accel, magnetometer
-    // and temperature samples that OpenHMD can also consume.
     if (size < 26 || data[0] != 0x0B) {
         return;
     }

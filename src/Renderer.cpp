@@ -50,7 +50,6 @@ float lineAt(float value, float position, float width)
 
 vec3 skyGradient(float latitude)
 {
-    // 0 == south pole, 0.5 == horizon, 1 == north pole.
     if (latitude < 0.5) {
         return mix(vec3(0.015, 0.025, 0.045), vec3(0.18, 0.32, 0.48),
             smoothstep(0.0, 0.5, latitude));
@@ -76,14 +75,10 @@ void main()
         return;
     }
 
-    // Calibration room shown until the first decoder frame arrives.
     vec3 base = skyGradient(uv.y);
-
-    // Perspective floor grid: latitude values near the horizon are far away.
     float horizonDistance = abs(uv.y - 0.5) * 2.0;
     float depth = 1.0 - smoothstep(0.0, 0.35, horizonDistance);
     if (uv.y < 0.5 && depth > 0.0) {
-        // Floor: dark cool gradient with a green-tinted grid.
         vec3 floorColor = mix(vec3(0.04, 0.07, 0.12), vec3(0.02, 0.04, 0.08), depth);
         float longitudeGrid = 1.0 - smoothstep(0.02, 0.05, abs(fract(uv.x * 16.0) - 0.5));
         float depthLine = 1.0 - smoothstep(0.02, 0.05, abs(fract(uv.y * 32.0) - 0.5));
@@ -91,11 +86,7 @@ void main()
         floorColor += vec3(0.20, 0.45, 0.55) * gridIntensity;
         base = mix(base, floorColor, depth);
     }
-
-    // Soft horizon glow.
     base += vec3(0.10, 0.18, 0.30) * (1.0 - smoothstep(0.0, 0.05, horizonDistance));
-
-    // Cardinal reference markers.
     base = mix(base, vec3(0.95, 0.20, 0.20), lineAt(uv.x, 0.50, 0.0025));
     base = mix(base, vec3(0.20, 0.85, 0.30), lineAt(uv.x, 0.25, 0.0025));
     base = mix(base, vec3(0.20, 0.45, 0.95), lineAt(uv.x, 0.75, 0.0025));
@@ -103,10 +94,53 @@ void main()
     base = mix(base, vec3(0.85, 0.85, 0.85), lineAt(uv.y, 0.25, 0.0035));
     base = mix(base, vec3(0.85, 0.85, 0.85), lineAt(uv.y, 0.75, 0.0035));
 
-    // Subtle vignette at the poles.
     float poleFade = smoothstep(0.0, 0.06, uv.y) * (1.0 - smoothstep(0.94, 1.0, uv.y));
     base *= mix(0.55, 1.0, poleFade);
     outColor = vec4(base, 1.0);
+}
+)glsl";
+
+// Flat panorama shader
+constexpr char flatVertexShader[] = R"glsl(
+#version 330 core
+in vec2 aPosition;
+out vec2 vScreenPos;
+void main()
+{
+    vScreenPos = aPosition * 0.5 + 0.5;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+)glsl";
+
+constexpr char flatFragmentShader[] = R"glsl(
+#version 330 core
+in vec2 vScreenPos;
+out vec4 outColor;
+uniform sampler2D uVideo;
+uniform int uHasVideo;
+uniform int uProjectionMode;
+uniform int uEye;
+uniform int uFlipVertical;
+uniform vec2 uPan;
+uniform vec2 uScale;
+
+void main()
+{
+    vec2 ndc = vScreenPos * 2.0 - 1.0;
+    vec2 uv = uPan + ndc * uScale;
+    if (uFlipVertical != 0) {
+        uv.y = 1.0 - uv.y;
+    }
+    if (uProjectionMode == 1) {
+        uv.y = uv.y * 0.5 + float(uEye) * 0.5;
+    } else if (uProjectionMode == 2) {
+        uv.x = uv.x * 0.5 + float(uEye) * 0.5;
+    }
+    if (uHasVideo != 0) {
+        outColor = vec4(texture(uVideo, uv).rgb, 1.0);
+    } else {
+        outColor = vec4(0.04, 0.05, 0.08, 1.0);
+    }
 }
 )glsl";
 
@@ -171,8 +205,6 @@ void main()
         vec2 p = (localUv - vec2(lensCenterX, 0.5)) * 2.0;
         p.x *= uEyeAspect;
         radiusSquared = dot(p, p);
-        // 6-term radial distortion polynomial from OpenHMD's OHMD_DISTORTION_K.
-        // K0 is the base scale; K1..K3 are PanoTools-style coefficients.
         float r2 = radiusSquared;
         float r4 = r2 * r2;
         float r6 = r4 * r2;
@@ -252,6 +284,20 @@ unsigned createProgram(const char* vertexSource, const char* fragmentSource, std
     return 0;
 }
 
+glm::vec2 computeFlatPanUv(const glm::quat& orientation, float fovRadians, float aspect)
+{
+    const glm::vec3 euler = glm::eulerAngles(orientation);
+    const float yaw = euler.y;
+    const float pitch = euler.x;
+    const float halfFovH = fovRadians * 0.5F;
+    const float halfFovV = halfFovH / aspect;
+    glm::vec2 pan;
+    pan.x = 0.5F - yaw / (2.0F * static_cast<float>(std::numbers::pi)) - (halfFovH / (2.0F * static_cast<float>(std::numbers::pi)));
+    pan.y = 0.5F + pitch / static_cast<float>(std::numbers::pi) - (halfFovV / (2.0F * static_cast<float>(std::numbers::pi)));
+    const glm::vec2 scale(halfFovH / static_cast<float>(std::numbers::pi), halfFovV / static_cast<float>(std::numbers::pi));
+    return pan;
+}
+
 } // namespace
 
 Renderer::~Renderer()
@@ -316,6 +362,10 @@ void Renderer::shutdown()
         glDeleteProgram(distortionProgram_);
         distortionProgram_ = 0;
     }
+    if (flatProgram_ != 0) {
+        glDeleteProgram(flatProgram_);
+        flatProgram_ = 0;
+    }
     if (sphereProgram_ != 0) {
         glDeleteProgram(sphereProgram_);
         sphereProgram_ = 0;
@@ -330,6 +380,10 @@ bool Renderer::createPrograms(std::string& error)
 {
     sphereProgram_ = createProgram(sphereVertexShader, sphereFragmentShader, error);
     if (sphereProgram_ == 0) {
+        return false;
+    }
+    flatProgram_ = createProgram(flatVertexShader, flatFragmentShader, error);
+    if (flatProgram_ == 0) {
         return false;
     }
     distortionProgram_ = createProgram(fullscreenVertexShader, distortionFragmentShader, error);
@@ -457,146 +511,12 @@ void Renderer::renderPreview(const int framebufferWidth, const int framebufferHe
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.008F, 0.012F, 0.02F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    renderSphereEye(0, framebufferWidth, framebufferHeight, orientation, settings);
-}
-
-void Renderer::renderAnaglyph(const int width, const int height,
-    const glm::quat& orientation, const RenderSettings& settings)
-{
-    const int eyeWidth = width;
-    const int eyeHeight = height;
-    if (!ensureEyeTargets(eyeWidth, eyeHeight)) {
-        return;
+    if (settings.viewMode == ViewMode::PanoramaFlat
+        || settings.viewMode == ViewMode::Fisheye180) {
+        renderFlatPanorama(0, framebufferWidth, framebufferHeight, orientation, settings);
+    } else {
+        renderSphereEye(0, framebufferWidth, framebufferHeight, orientation, settings);
     }
-
-    // Render the left eye into the red channel and the right eye into the
-    // green+blue channels. This produces a classic red/cyan anaglyph image
-    // that can be viewed with cheap 3D glasses on any monitor.
-    for (int eye = 0; eye < 2; ++eye) {
-        glBindFramebuffer(GL_FRAMEBUFFER, eyes_[eye].framebuffer);
-        glViewport(0, 0, eyeWidth, eyeHeight);
-        glEnable(GL_DEPTH_TEST);
-        if (eye == 0) {
-            glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
-        } else {
-            glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
-        }
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        renderSphereEye(eye, eyeWidth, eyeHeight, orientation, settings);
-    }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, width, height);
-    glDisable(GL_DEPTH_TEST);
-    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    const float halfWidth = static_cast<float>(width);
-    const float halfHeight = static_cast<float>(height);
-    glMatrixMode(GL_PROJECTION);
-    glPushMatrix();
-    glLoadIdentity();
-    glOrtho(0.0F, halfWidth, halfHeight, 0.0F, -1.0F, 1.0F);
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE);
-
-    // Red channel from the left eye.
-    glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_TRUE);
-    blitEye(eyes_[0].colorTexture, 0, 0, width, height);
-
-    // Cyan (green+blue) channels from the right eye.
-    glColorMask(GL_FALSE, GL_TRUE, GL_TRUE, GL_TRUE);
-    blitEye(eyes_[1].colorTexture, 0, 0, width, height);
-
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glDisable(GL_BLEND);
-
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
-    glPopMatrix();
-    (void)halfWidth;
-    (void)halfHeight;
-}
-
-void Renderer::renderSideBySide(const int width, const int height,
-    const glm::quat& orientation, const RenderSettings& settings,
-    const float halfWidth, const float halfHeight)
-{
-    (void)halfHeight;
-    const int halfW = static_cast<int>(halfWidth);
-    if (!ensureEyeTargets(halfW, height)) {
-        return;
-    }
-    for (int eye = 0; eye < 2; ++eye) {
-        glBindFramebuffer(GL_FRAMEBUFFER, eyes_[eye].framebuffer);
-        glViewport(0, 0, halfW, height);
-        glEnable(GL_DEPTH_TEST);
-        glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        renderSphereEye(eye, halfW, height, orientation, settings);
-    }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, width, height);
-    glDisable(GL_DEPTH_TEST);
-    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
-    glClear(GL_COLOR_BUFFER_BIT);
-    blitEye(eyes_[0].colorTexture, 0, 0, halfW, height);
-    blitEye(eyes_[1].colorTexture, halfW, 0, width - halfW, height);
-}
-
-void Renderer::blitEye(const unsigned colorTexture, const int x, const int y,
-    const int width, const int height)
-{
-    if (colorTexture == 0) {
-        return;
-    }
-    glBindTexture(GL_TEXTURE_2D, colorTexture);
-    glEnable(GL_TEXTURE_2D);
-    glBegin(GL_QUADS);
-    const float u0 = 0.0F;
-    const float u1 = 1.0F;
-    const float v0 = 1.0F;
-    const float v1 = 0.0F;
-    glTexCoord2f(u0, v0); glVertex2i(x, y);
-    glTexCoord2f(u1, v0); glVertex2i(x + width, y);
-    glTexCoord2f(u1, v1); glVertex2i(x + width, y + height);
-    glTexCoord2f(u0, v1); glVertex2i(x, y + height);
-    glEnd();
-    glDisable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, 0);
-}
-
-void Renderer::renderMirror(const int framebufferWidth, const int framebufferHeight,
-    const glm::quat& orientation, const RenderSettings& settings, const int targetEye)
-{
-    if (!initialized() || framebufferWidth <= 0 || framebufferHeight <= 0) {
-        return;
-    }
-    if (targetEye < 0 || targetEye > 1) {
-        return;
-    }
-    if (!ensureEyeTargets(framebufferWidth, framebufferHeight)) {
-        return;
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, eyes_[targetEye].framebuffer);
-    glViewport(0, 0, framebufferWidth, framebufferHeight);
-    glEnable(GL_DEPTH_TEST);
-    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    renderSphereEye(targetEye, framebufferWidth, framebufferHeight, orientation, settings);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, framebufferWidth, framebufferHeight);
-    glDisable(GL_DEPTH_TEST);
-    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
-    glClear(GL_COLOR_BUFFER_BIT);
-    blitEye(eyes_[targetEye].colorTexture, 0, 0, framebufferWidth, framebufferHeight);
 }
 
 void Renderer::renderVr(const int framebufferWidth, const int framebufferHeight,
@@ -617,7 +537,12 @@ void Renderer::renderVr(const int framebufferWidth, const int framebufferHeight,
         glEnable(GL_DEPTH_TEST);
         glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        renderSphereEye(eye, eyeWidth, framebufferHeight, orientation, settings);
+        if (settings.viewMode == ViewMode::PanoramaFlat
+            || settings.viewMode == ViewMode::Fisheye180) {
+            renderFlatPanorama(eye, eyeWidth, framebufferHeight, orientation, settings);
+        } else {
+            renderSphereEye(eye, eyeWidth, framebufferHeight, orientation, settings);
+        }
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -656,62 +581,58 @@ void Renderer::renderVr(const int framebufferWidth, const int framebufferHeight,
     glUseProgram(0);
 }
 
-bool Renderer::ensureEyeTargets(const int width, const int height)
+void Renderer::renderMirror(const int framebufferWidth, const int framebufferHeight,
+    const glm::quat& orientation, const RenderSettings& settings, const int targetEye)
 {
-    if (eyeTargetWidth_ == width && eyeTargetHeight_ == height
-        && eyes_[0].framebuffer != 0 && eyes_[1].framebuffer != 0) {
-        return true;
+    if (!initialized() || framebufferWidth <= 0 || framebufferHeight <= 0) {
+        return;
     }
-    destroyEyeTargets();
-    eyeTargetWidth_ = width;
-    eyeTargetHeight_ = height;
-
-    for (auto& eye : eyes_) {
-        glGenFramebuffers(1, &eye.framebuffer);
-        glBindFramebuffer(GL_FRAMEBUFFER, eye.framebuffer);
-        glGenTextures(1, &eye.colorTexture);
-        glBindTexture(GL_TEXTURE_2D, eye.colorTexture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
-            GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-            eye.colorTexture, 0);
-
-        glGenRenderbuffers(1, &eye.depthBuffer);
-        glBindRenderbuffer(GL_RENDERBUFFER, eye.depthBuffer);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
-            eye.depthBuffer);
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            log::error("Stereo goz framebuffer olusturulamadi.");
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            destroyEyeTargets();
-            return false;
-        }
+    if (targetEye < 0 || targetEye > 1) {
+        return;
     }
+    if (!ensureEyeTargets(framebufferWidth, framebufferHeight)) {
+        return;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, eyes_[targetEye].framebuffer);
+    glViewport(0, 0, framebufferWidth, framebufferHeight);
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (settings.viewMode == ViewMode::PanoramaFlat
+        || settings.viewMode == ViewMode::Fisheye180) {
+        renderFlatPanorama(targetEye, framebufferWidth, framebufferHeight, orientation, settings);
+    } else {
+        renderSphereEye(targetEye, framebufferWidth, framebufferHeight, orientation, settings);
+    }
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    return true;
+    glViewport(0, 0, framebufferWidth, framebufferHeight);
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+    glClear(GL_COLOR_BUFFER_BIT);
+    blitEye(eyes_[targetEye].colorTexture, 0, 0, framebufferWidth, framebufferHeight);
 }
 
-void Renderer::destroyEyeTargets()
+void Renderer::blitEye(const unsigned colorTexture, const int x, const int y,
+    const int width, const int height)
 {
-    for (auto& eye : eyes_) {
-        if (eye.depthBuffer != 0) {
-            glDeleteRenderbuffers(1, &eye.depthBuffer);
-        }
-        if (eye.colorTexture != 0) {
-            glDeleteTextures(1, &eye.colorTexture);
-        }
-        if (eye.framebuffer != 0) {
-            glDeleteFramebuffers(1, &eye.framebuffer);
-        }
-        eye = {};
+    if (colorTexture == 0) {
+        return;
     }
-    eyeTargetWidth_ = 0;
-    eyeTargetHeight_ = 0;
+    glBindTexture(GL_TEXTURE_2D, colorTexture);
+    glEnable(GL_TEXTURE_2D);
+    glBegin(GL_QUADS);
+    const float u0 = 0.0F;
+    const float u1 = 1.0F;
+    const float v0 = 1.0F;
+    const float v1 = 0.0F;
+    glTexCoord2f(u0, v0); glVertex2i(x, y);
+    glTexCoord2f(u1, v0); glVertex2i(x + width, y);
+    glTexCoord2f(u1, v1); glVertex2i(x + width, y + height);
+    glTexCoord2f(u0, v1); glVertex2i(x, y + height);
+    glEnd();
+    glDisable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void Renderer::renderSphereEye(const int eye, const int width, const int height,
@@ -741,24 +662,109 @@ void Renderer::renderSphereEye(const int eye, const int width, const int height,
     glUseProgram(0);
 }
 
-bool Renderer::initialized() const noexcept
+void Renderer::renderFlatPanorama(const int eye, const int width, const int height,
+    const glm::quat& orientation, const RenderSettings& settings)
 {
-    return sphereProgram_ != 0 && distortionProgram_ != 0 && sphereVao_ != 0;
+    const float aspect = static_cast<float>(width) / static_cast<float>(std::max(height, 1));
+    const float fovRadians = glm::radians(std::clamp(settings.fovDegrees, 60.0F, 130.0F));
+    const float halfFovH = fovRadians * 0.5F;
+    const float halfFovV = std::atan(std::tan(halfFovH) / aspect);
+
+    const glm::vec3 euler = glm::eulerAngles(orientation);
+    const float yaw = euler.y;
+    const float pitch = euler.x;
+    constexpr float twoPi = 2.0F * static_cast<float>(std::numbers::pi);
+    constexpr float onePi = static_cast<float>(std::numbers::pi);
+
+    glm::vec2 pan;
+    pan.x = 0.5F - yaw / twoPi - (halfFovH / twoPi);
+    pan.y = 0.5F + pitch / onePi - (halfFovV / onePi);
+
+    const glm::vec2 scale(std::tan(halfFovH) / onePi, std::tan(halfFovV) / onePi);
+
+    glUseProgram(flatProgram_);
+    glUniform1i(glGetUniformLocation(flatProgram_, "uVideo"), 0);
+    glUniform1i(glGetUniformLocation(flatProgram_, "uHasVideo"), hasVideoFrame_ ? 1 : 0);
+    glUniform1i(glGetUniformLocation(flatProgram_, "uProjectionMode"),
+        static_cast<int>(settings.projection));
+    glUniform1i(glGetUniformLocation(flatProgram_, "uEye"), eye);
+    glUniform1i(glGetUniformLocation(flatProgram_, "uFlipVertical"),
+        settings.flipVertical ? 1 : 0);
+    glUniform2f(glGetUniformLocation(flatProgram_, "uPan"), pan.x, pan.y);
+    glUniform2f(glGetUniformLocation(flatProgram_, "uScale"), scale.x, scale.y);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, videoTexture_);
+    glBindVertexArray(fullscreenVao_);
+    glDisable(GL_DEPTH_TEST);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glEnable(GL_DEPTH_TEST);
+    glBindVertexArray(0);
+    glUseProgram(0);
 }
 
-bool Renderer::hasVideoFrame() const noexcept
+void Renderer::renderFisheye180(const int eye, const int width, const int height,
+    const glm::quat& orientation, const RenderSettings& settings)
 {
-    return hasVideoFrame_;
+    renderFlatPanorama(eye, width, height, orientation, settings);
 }
 
-unsigned Renderer::videoWidth() const noexcept
+void Renderer::renderAnaglyph(const int width, const int height,
+    const glm::quat& orientation, const RenderSettings& settings)
 {
-    return videoWidth_;
+    if (!ensureEyeTargets(width, height)) {
+        return;
+    }
+    for (int eye = 0; eye < 2; ++eye) {
+        glBindFramebuffer(GL_FRAMEBUFFER, eyes_[eye].framebuffer);
+        glViewport(0, 0, width, height);
+        glEnable(GL_DEPTH_TEST);
+        glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        renderSphereEye(eye, width, height, orientation, settings);
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, width, height);
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE);
+    glBindTexture(GL_TEXTURE_2D, eyes_[0].colorTexture);
+    glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_TRUE);
+    blitEye(eyes_[0].colorTexture, 0, 0, width, height);
+    glBindTexture(GL_TEXTURE_2D, eyes_[1].colorTexture);
+    glColorMask(GL_FALSE, GL_TRUE, GL_TRUE, GL_TRUE);
+    blitEye(eyes_[1].colorTexture, 0, 0, width, height);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDisable(GL_BLEND);
 }
 
-unsigned Renderer::videoHeight() const noexcept
+void Renderer::renderSideBySide(const int width, const int height,
+    const glm::quat& orientation, const RenderSettings& settings,
+    const float halfWidth, const float halfHeight)
 {
-    return videoHeight_;
+    (void)halfHeight;
+    if (!ensureEyeTargets(static_cast<int>(halfWidth), height)) {
+        return;
+    }
+    for (int eye = 0; eye < 2; ++eye) {
+        glBindFramebuffer(GL_FRAMEBUFFER, eyes_[eye].framebuffer);
+        glViewport(0, 0, static_cast<int>(halfWidth), height);
+        glEnable(GL_DEPTH_TEST);
+        glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        renderSphereEye(eye, static_cast<int>(halfWidth), height, orientation, settings);
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, width, height);
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+    glClear(GL_COLOR_BUFFER_BIT);
+    blitEye(eyes_[0].colorTexture, 0, 0, static_cast<int>(halfWidth), height);
+    blitEye(eyes_[1].colorTexture, static_cast<int>(halfWidth), 0,
+        width - static_cast<int>(halfWidth), height);
 }
 
 } // namespace dk2vr

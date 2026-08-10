@@ -16,16 +16,9 @@ enum class PreviewMode : std::int32_t {
     AnaglyphRedCyan = 2,
 };
 
-enum class ViewMode : std::int32_t {
-    Sphere360 = 0,
-    PanoramaFlat = 1,
-    Fisheye180 = 2,
-};
-
 struct RenderSettings {
     ProjectionMode projection {ProjectionMode::Mono360};
     PreviewMode previewMode {PreviewMode::Mono360};
-    ViewMode viewMode {ViewMode::Sphere360};
     float fovDegrees {100.0F};
     std::array<float, 6> distortion {1.0F, 0.22F, 0.24F, 0.0F, 0.0F, 0.0F};
     float chromaticAberration {0.008F};
@@ -89,18 +82,6 @@ private:
         int height,
         const glm::quat& orientation,
         const RenderSettings& settings);
-    void renderFlatPanorama(
-        int eye,
-        int width,
-        int height,
-        const glm::quat& orientation,
-        const RenderSettings& settings);
-    void renderFisheye180(
-        int eye,
-        int width,
-        int height,
-        const glm::quat& orientation,
-        const RenderSettings& settings);
     void renderAnaglyph(
         int width,
         int height,
@@ -121,7 +102,6 @@ private:
         int height);
 
     unsigned sphereProgram_ {0};
-    unsigned flatProgram_ {0};
     unsigned distortionProgram_ {0};
     unsigned sphereVao_ {0};
     unsigned sphereVbo_ {0};

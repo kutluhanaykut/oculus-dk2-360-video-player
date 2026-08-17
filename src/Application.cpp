@@ -536,6 +536,11 @@ void Application::drawDevicePanel()
         if (!hmd_.lastError().empty()) {
             ImGui::TextWrapped("%s", hmd_.lastError().c_str());
         }
+        ImGui::TextDisabled("Cozum: DK2'nin USB kablosunun bagli oldugunu dogrulayin. "
+            "Windows Aygit Yoneticisi'nde DK2 izleme cihazini bulun. "
+            "Cihaz WinUSB veya libusb-win32 surucusune bagli olmalidir. "
+            "Oculus 0.8 runtime kurun veya Zadig ile surucuyu degistirin. "
+            "Detayli log icin DK2VRPlayer.log dosyasina bakin.");
     }
     if (ImGui::Button("DK2'yi yeniden tara")) {
         std::string hmdError;

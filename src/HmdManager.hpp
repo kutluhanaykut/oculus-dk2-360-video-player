@@ -69,6 +69,7 @@ private:
     int activeDeviceVectorIndex_ {-1};
     HmdDisplayInfo displayInfo_;
     glm::quat orientation_ {1.0F, 0.0F, 0.0F, 0.0F};
+    glm::quat calibration_ {1.0F, 0.0F, 0.0F, 0.0F};
     bool recenterPending_ {true};
     bool openHmdActive_ {false};
     std::string lastError_;

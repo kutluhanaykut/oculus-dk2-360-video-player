@@ -46,15 +46,9 @@ bool HmdManager::initialize(std::string& error)
     displayInfo_ = HmdDisplayInfo {};
     applyDefaults(displayInfo_);
 
-    if (winUsbDk2_->connect()) {
-        activeBackend_ = "WinUSB (SetupAPI)";
-        orientation_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
-        recenterPending_ = true;
-        lastError_.clear();
-        log::info("DK2 jiroskopu " + activeBackend_ + " uzerinden acildi.");
-        return true;
-    }
-
+    // OpenHMD implements the full DK2 protocol (feature reports, keep-alive,
+    // sensor fusion) and is therefore preferred. Dk2WinUsb is a fallback that
+    // only works when the DK2 is already streaming IMU data on its own.
     if (initializeOpenHmd(error)) {
         activeBackend_ = "OpenHMD";
         orientation_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
@@ -63,7 +57,40 @@ bool HmdManager::initialize(std::string& error)
         return true;
     }
 
+    if (winUsbDk2_->connect()) {
+        switch (winUsbDk2_->backend()) {
+        case Dk2Backend::WinUsb:
+            activeBackend_ = "WinUSB (SetupAPI)";
+            break;
+        case Dk2Backend::HidApi:
+            activeBackend_ = "hidapi";
+            break;
+        case Dk2Backend::Libusb:
+            activeBackend_ = "libusb";
+            break;
+        default:
+            activeBackend_ = "Bilinmeyen";
+            break;
+        }
+        orientation_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
+        recenterPending_ = true;
+        lastError_.clear();
+        log::info("DK2 jiroskopu " + activeBackend_ + " uzerinden acildi.");
+        return true;
+    }
+
+    const std::string winUsbError = winUsbDk2_->lastError();
+
     activeBackend_ = "Yok";
+    if (error.empty()) {
+        error = winUsbError.empty()
+            ? "DK2 USB izleme cihazi bulunamadi. DK2'nin USB kablosunun bagli "
+              "oldugunu ve Windows Aygit Yoneticisi'nde gorundugunu dogrulayin. "
+              "DK2 izleme cihazi WinUSB veya libusb-win32 surucusune bagli olmalidir "
+              "(Oculus 0.8 runtime veya Zadig ile)."
+            : winUsbError;
+    }
+    lastError_ = error;
     return false;
 }
 
@@ -76,6 +103,7 @@ void HmdManager::shutdown()
     devices_.clear();
     activeDeviceVectorIndex_ = -1;
     orientation_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
+    calibration_ = glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
     activeBackend_ = "Yok";
 }
 
@@ -266,12 +294,10 @@ void HmdManager::update()
     }
     const glm::quat normalized = glm::normalize(candidate);
     if (recenterPending_) {
-        if (winUsbDk2_ != nullptr) {
-            winUsbDk2_->recenter();
-        }
+        calibration_ = glm::inverse(normalized);
         recenterPending_ = false;
     }
-    orientation_ = normalized;
+    orientation_ = glm::normalize(calibration_ * normalized);
 }
 
 void HmdManager::recenter()

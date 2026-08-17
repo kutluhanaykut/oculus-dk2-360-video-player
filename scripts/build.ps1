@@ -22,7 +22,7 @@ if ($Clean -and (Test-Path $BuildDirectory)) {
 $CmakeArguments = @(
     '-S', $Root,
     '-B', $BuildDirectory,
-    '-G', 'Visual Studio 17 2022',
+    '-G', 'Visual Studio 18 2026',
     '-A', 'x64',
     '-DDK2VR_BUILD_TESTS=ON',
     '-DDK2VR_PACKAGE_VLC_PLUGINS=OFF'

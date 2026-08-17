@@ -95,12 +95,9 @@ target_include_directories(imgui_sdl_opengl PUBLIC
 )
 target_link_libraries(imgui_sdl_opengl PUBLIC SDL2::SDL2-static OpenGL::GL)
 
-# hidapi is OpenHMD's cross-platform USB HID transport. We build it with the
-# libusb-1.0 backend enabled so that WinUSB-class DK2 devices exposed by the
-# "DK2 0.8 driver" become reachable from our application.
-set(HIDAPI_BUILD_HIDTEST OFF CACHE BOOL "" FORCE)
-set(HIDAPI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(HIDAPI_BUILD_LIBSHARDWARE ON CACHE BOOL "Build libusb-based hidapi implementation on Windows" FORCE)
+# libusb-1.0 is used directly by Dk2WinUsb to talk to the DK2 tracking device
+# through either the WinUSB or libusb-win32 (libusb0.sys) driver. v1.0.27 has
+# no CMake build system, so we compile the Windows backend sources ourselves.
 set(LIBUSB_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(LIBUSB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LIBUSB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -112,6 +109,45 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(libusb)
+
+add_library(libusb_static STATIC
+    ${libusb_SOURCE_DIR}/libusb/core.c
+    ${libusb_SOURCE_DIR}/libusb/descriptor.c
+    ${libusb_SOURCE_DIR}/libusb/hotplug.c
+    ${libusb_SOURCE_DIR}/libusb/io.c
+    ${libusb_SOURCE_DIR}/libusb/strerror.c
+    ${libusb_SOURCE_DIR}/libusb/sync.c
+    ${libusb_SOURCE_DIR}/libusb/os/windows_winusb.c
+    ${libusb_SOURCE_DIR}/libusb/os/windows_common.c
+    ${libusb_SOURCE_DIR}/libusb/os/windows_usbdk.c
+    ${libusb_SOURCE_DIR}/libusb/os/events_windows.c
+    ${libusb_SOURCE_DIR}/libusb/os/threads_windows.c
+)
+
+target_include_directories(libusb_static PUBLIC
+    ${libusb_SOURCE_DIR}
+    ${libusb_SOURCE_DIR}/libusb
+    ${libusb_SOURCE_DIR}/libusb/os
+)
+
+target_compile_definitions(libusb_static PRIVATE
+    _WIN32_WINNT=0x0601
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    PLATFORM_WINDOWS=1
+    _TIMESPEC_DEFINED=1
+)
+
+
+target_link_libraries(libusb_static PUBLIC setupapi advapi32 winusb)
+
+
+# hidapi is OpenHMD's cross-platform USB HID transport. We build it with the
+# libusb-1.0 backend enabled so that WinUSB-class DK2 devices exposed by the
+# "DK2 0.8 driver" become reachable from our application.
+set(HIDAPI_BUILD_HIDTEST OFF CACHE BOOL "" FORCE)
+set(HIDAPI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(HIDAPI_BUILD_LIBSHARDWARE ON CACHE BOOL "Build libusb-based hidapi implementation on Windows" FORCE)
 FetchContent_Declare(
     hidapi
     GIT_REPOSITORY https://github.com/libusb/hidapi.git
@@ -119,6 +155,7 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(hidapi)
+
 
 # OpenHMD 0.3's upstream CMake expects a system-installed hidapi. Building the
 # focused DK1/DK2 driver directly keeps the application reproducible and avoids
@@ -198,11 +235,13 @@ target_link_libraries(DK2VRPlayer PRIVATE
     imgui_sdl_opengl
     openhmd_dk2
     hidapi::hidapi
+    libusb_static
     comdlg32
     shell32
     winusb
     setupapi
 )
+
 target_compile_definitions(DK2VRPlayer PRIVATE
     NOMINMAX
     WIN32_LEAN_AND_MEAN

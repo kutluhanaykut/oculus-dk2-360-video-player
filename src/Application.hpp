@@ -3,7 +3,9 @@
 #include "HmdManager.hpp"
 #include "Renderer.hpp"
 #include "VideoPlayer.hpp"
+#include "YouTubeHistory.hpp"
 #include "YouTubeResolver.hpp"
+
 
 #include <SDL.h>
 
@@ -37,9 +39,11 @@ private:
     void drawPlaybackControls();
     void drawSettings();
     void drawDevicePanel();
+    void drawYouTubeHistory();
     void startYouTubeResolution();
     void playResolvedMedia(const YouTubeMedia& media);
     void playLocalFile(const std::filesystem::path& path);
+    void playYouTubeUrl(const std::string& url);
     void enterVrMode();
     void leaveVrMode();
     void toggleVrMode();
@@ -47,8 +51,10 @@ private:
     [[nodiscard]] glm::quat viewOrientation() const;
     [[nodiscard]] std::filesystem::path vlcPluginDirectory() const;
     [[nodiscard]] std::filesystem::path ytDlpPath() const;
+    [[nodiscard]] std::filesystem::path youtubeHistoryPath() const;
     void setStatus(std::string message);
     void setError(std::string message);
+
 
     SDL_Window* window_ {nullptr};
     SDL_GLContext glContext_ {nullptr};
@@ -64,15 +70,19 @@ private:
     Renderer renderer_;
     VideoPlayer video_;
     YouTubeResolver resolver_;
+    YouTubeHistory youtubeHistory_;
     RenderSettings renderSettings_;
+
 
     std::array<char, 4096> youtubeUrl_ {};
     std::filesystem::path selectedFile_;
     std::string currentTitle_;
+    std::string currentYouTubeUrl_;
     std::string status_ {"Hazir. Bir 360 video dosyasi acin veya YouTube adresi girin."};
     std::string error_;
     std::future<YouTubeMedia> resolutionFuture_;
     bool resolving_ {false};
+
 
     float mouseYaw_ {0.0F};
     float mousePitch_ {0.0F};

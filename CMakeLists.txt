@@ -211,12 +211,14 @@ set(DK2VR_SOURCES
     src/VideoPlayer.cpp
     src/VlcApi.cpp
     src/YouTubeResolver.cpp
+    src/YouTubeHistory.cpp
     src/Process.cpp
     src/FileDialog.cpp
     src/Logger.cpp
     src/Projection.cpp
     resources/app.rc
 )
+
 
 add_executable(DK2VRPlayer WIN32 ${DK2VR_SOURCES})
 # Bundled manifest enables Per-Monitor DPI awareness and Windows 11 compatibility.

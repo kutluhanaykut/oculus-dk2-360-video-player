@@ -57,8 +57,10 @@ bool directoryExists(const std::filesystem::path& path)
 
 Application::Application()
     : resolver_(ytDlpPath())
+    , youtubeHistory_(youtubeHistoryPath())
 {
 }
+
 
 Application::~Application()
 {
@@ -70,6 +72,8 @@ bool Application::initialize(std::string& error)
     const std::filesystem::path executableDir = executableDirectory();
     log::initialize(executableDir);
     log::info("DK2 360 VR Player baslatiliyor.");
+    youtubeHistory_.load();
+
 
     SDL_SetMainReady();
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
@@ -406,9 +410,11 @@ void Application::renderUserInterface()
     ImGui::Separator();
 
     drawPlaybackControls();
+    drawYouTubeHistory();
     if (ImGui::CollapsingHeader("360 video ve lens ayarlari", ImGuiTreeNodeFlags_DefaultOpen)) {
         drawSettings();
     }
+
     if (ImGui::CollapsingHeader("DK2 ve ekran", ImGuiTreeNodeFlags_DefaultOpen)) {
         drawDevicePanel();
     }
@@ -483,7 +489,33 @@ void Application::drawPlaybackControls()
     }
 }
 
+void Application::drawYouTubeHistory()
+{
+    if (youtubeHistory_.empty()) {
+        return;
+    }
+    if (ImGui::CollapsingHeader("YouTube gecmisi", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Temizle")) {
+            youtubeHistory_.clear();
+        }
+        ImGui::Separator();
+        for (const YouTubeHistoryEntry& entry : youtubeHistory_.entries()) {
+            const std::string label = entry.title.empty() ? entry.url : entry.title;
+            if (ImGui::Selectable(label.c_str(), false)) {
+                playYouTubeUrl(entry.url);
+            }
+            ImGui::SameLine();
+            const std::string removeId = "x##" + entry.url;
+            if (ImGui::SmallButton(removeId.c_str())) {
+                youtubeHistory_.remove(entry.url);
+            }
+        }
+    }
+}
+
 void Application::drawSettings()
+
 {
     int projection = static_cast<int>(renderSettings_.projection);
     constexpr const char* projectionNames[] {
@@ -636,11 +668,13 @@ void Application::startYouTubeResolution()
     }
     error_.clear();
     status_ = "YouTube video ve ses akis adresleri cozuluyor...";
+    currentYouTubeUrl_ = url;
     resolving_ = true;
     resolutionFuture_ = std::async(std::launch::async, [this, url] {
         return resolver_.resolve(url);
     });
 }
+
 
 void Application::playResolvedMedia(const YouTubeMedia& media)
 {
@@ -650,8 +684,10 @@ void Application::playResolvedMedia(const YouTubeMedia& media)
         return;
     }
     currentTitle_ = media.title;
+    youtubeHistory_.add(media.title, currentYouTubeUrl_);
 
     // yt-dlp "projection" alanina gore projeksiyon modunu otomatik sec.
+
     // "equirectangular" -> 360 derece, "cubemap" -> EAC cubemap,
     // "flat" -> 2D video.
     switch (media.projectionType) {
@@ -691,6 +727,32 @@ void Application::playLocalFile(const std::filesystem::path& path)
     currentTitle_ = wideToUtf8(path.filename().wstring());
     setStatus("Yerel 360 video oynatiliyor: " + currentTitle_);
 }
+
+void Application::playYouTubeUrl(const std::string& url)
+{
+    if (resolving_) {
+        return;
+    }
+    if (!isLikelyYouTubeUrl(url)) {
+        setError("Gecerli bir YouTube video URL'si girin.");
+        return;
+    }
+    if (!resolver_.available()) {
+        setError("yt-dlp.exe bulunamadi. scripts/bootstrap.ps1 calistirin.");
+        return;
+    }
+    // URL'yi giris kutusuna yaz ki kullanici guncel adresi gorsun.
+    std::memset(youtubeUrl_.data(), 0, youtubeUrl_.size());
+    std::strncpy(youtubeUrl_.data(), url.c_str(), youtubeUrl_.size() - 1);
+    error_.clear();
+    status_ = "YouTube video ve ses akis adresleri cozuluyor...";
+    currentYouTubeUrl_ = url;
+    resolving_ = true;
+    resolutionFuture_ = std::async(std::launch::async, [this, url] {
+        return resolver_.resolve(url);
+    });
+}
+
 
 void Application::enterVrMode()
 {
@@ -777,6 +839,12 @@ std::filesystem::path Application::ytDlpPath() const
 {
     return executableDirectory() / L"yt-dlp.exe";
 }
+
+std::filesystem::path Application::youtubeHistoryPath() const
+{
+    return executableDirectory() / L"youtube_history.json";
+}
+
 
 void Application::setStatus(std::string message)
 {

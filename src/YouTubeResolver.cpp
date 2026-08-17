@@ -127,7 +127,29 @@ YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl) const
         }
         const Json root = Json::parse(process.output.substr(begin, end - begin + 1));
         media.title = root.value("title", std::string("YouTube 360 video"));
+        media.projection = root.value("projection", std::string {});
         readHeaders(root, media.httpHeaders);
+        if (!media.projection.empty()) {
+            log::info("YouTube video projeksiyonu: " + media.projection);
+        }
+
+        // yt-dlp "projection" alanini VideoProjection turune cevir.
+        // "cubemap" -> EAC (Equi-Angular Cubemap), "equirectangular" -> 360,
+        // "mesh" -> spherical mesh, "flat" -> 2D.
+        const std::string projectionLower = lowerCase(media.projection);
+        if (projectionLower == "cubemap" || projectionLower == "eac"
+            || projectionLower == "equiangularcubemap") {
+            media.projectionType = VideoProjection::CubemapEac;
+        } else if (projectionLower == "equirectangular") {
+            media.projectionType = VideoProjection::Equirectangular;
+        } else if (projectionLower == "mesh") {
+            media.projectionType = VideoProjection::Mesh;
+        } else if (projectionLower == "flat" || projectionLower == "2d") {
+            media.projectionType = VideoProjection::Flat;
+        } else {
+            media.projectionType = VideoProjection::Unknown;
+        }
+
 
         const auto formats = root.find("requested_formats");
         if (formats != root.end() && formats->is_array()) {
@@ -171,7 +193,7 @@ const std::filesystem::path& YouTubeResolver::executable() const noexcept
 bool isLikelyYouTubeUrl(const std::string& value)
 {
     const std::string url = lowerCase(value);
-    const bool validScheme = url.starts_with("https://") || url.starts_with("http://");
+    const bool validScheme = url.rfind("https://", 0) == 0 || url.rfind("http://", 0) == 0;
     return validScheme && (url.find("youtube.com/") != std::string::npos
         || url.find("youtu.be/") != std::string::npos
         || url.find("youtube-nocookie.com/") != std::string::npos);

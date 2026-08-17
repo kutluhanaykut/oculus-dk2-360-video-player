@@ -174,7 +174,8 @@ bool Application::initialize(std::string& error)
         error_.clear();
     }
 
-    const int displayCount = std::max(SDL_GetNumVideoDisplays(), 1);
+    const int displayCount = (std::max)(SDL_GetNumVideoDisplays(), 1);
+
     int bestScore = -1;
     for (int displayIndex = 0; displayIndex < displayCount; ++displayIndex) {
         int score = displayIndex == 0 ? 0 : 1;
@@ -274,9 +275,12 @@ void Application::handleEvent(const SDL_Event& event)
     }
 
     const bool keyboardCaptured = imguiInitialized_ && ImGui::GetIO().WantCaptureKeyboard;
+    const bool textInputActive = imguiInitialized_ && ImGui::GetIO().WantTextInput;
     if (event.type == SDL_KEYDOWN && event.key.repeat == 0
-        && (vrMode_ || !keyboardCaptured || event.key.keysym.sym == SDLK_ESCAPE
+        && (vrMode_ || !keyboardCaptured || !textInputActive
+            || event.key.keysym.sym == SDLK_ESCAPE
             || event.key.keysym.sym == SDLK_F11)) {
+
         switch (event.key.keysym.sym) {
         case SDLK_ESCAPE:
             if (vrMode_) {
@@ -304,13 +308,14 @@ void Application::handleEvent(const SDL_Event& event)
             video_.seek(video_.time() + 10000);
             break;
         case SDLK_UP:
-            volume_ = std::min(volume_ + 5, 100);
+            volume_ = (std::min)(volume_ + 5, 100);
             video_.setVolume(volume_);
             break;
         case SDLK_DOWN:
-            volume_ = std::max(volume_ - 5, 0);
+            volume_ = (std::max)(volume_ - 5, 0);
             video_.setVolume(volume_);
             break;
+
         case SDLK_1:
             renderSettings_.projection = ProjectionMode::Mono360;
             break;
@@ -320,7 +325,11 @@ void Application::handleEvent(const SDL_Event& event)
         case SDLK_3:
             renderSettings_.projection = ProjectionMode::StereoLeftRight;
             break;
+        case SDLK_4:
+            renderSettings_.projection = ProjectionMode::CubemapEac;
+            break;
         case SDLK_d:
+
             renderSettings_.distortionEnabled = !renderSettings_.distortionEnabled;
             break;
         default:
@@ -414,7 +423,8 @@ void Application::renderUserInterface()
         ImGui::TextWrapped("%s", status_.c_str());
         ImGui::PopStyleColor();
     }
-    ImGui::TextDisabled("Kisayol: F11 VR | Space duraklat | R merkez | <-/-> 10 sn | 1/2/3 format");
+    ImGui::TextDisabled("Kisayol: F11 VR | Space duraklat | R merkez | <-/-> 10 sn | 1/2/3/4 format");
+
     ImGui::End();
 }
 
@@ -476,12 +486,34 @@ void Application::drawPlaybackControls()
 void Application::drawSettings()
 {
     int projection = static_cast<int>(renderSettings_.projection);
-    constexpr const char* projectionNames[] {"Mono 360", "3D 360 ust/alt", "3D 360 yan yana"};
+    constexpr const char* projectionNames[] {
+        "Mono 360", "3D 360 ust/alt", "3D 360 yan yana", "Cubemap (EAC)"};
     ImGui::SetNextItemWidth(220.0F);
     if (ImGui::Combo("Video yerlesimi", &projection, projectionNames,
             static_cast<int>(std::size(projectionNames)))) {
         renderSettings_.projection = static_cast<ProjectionMode>(projection);
     }
+
+    // Hizli projeksiyon modu butonlari.
+    ImGui::Text("Projeksiyon:");
+    ImGui::SameLine();
+    if (ImGui::Button("Mono 360")) {
+        renderSettings_.projection = ProjectionMode::Mono360;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Ust/Alt 3D")) {
+        renderSettings_.projection = ProjectionMode::StereoTopBottom;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Yan Yana 3D")) {
+        renderSettings_.projection = ProjectionMode::StereoLeftRight;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cubemap (EAC)")) {
+        renderSettings_.projection = ProjectionMode::CubemapEac;
+    }
+
+
     int previewMode = static_cast<int>(renderSettings_.previewMode);
     constexpr const char* previewModeNames[] {"Tek goz (monitor)", "Side-by-side 3D", "Anaglif kirmizi/cyan"};
     ImGui::SetNextItemWidth(220.0F);
@@ -557,9 +589,10 @@ void Application::drawDevicePanel()
         mousePitch_ = 0.0F;
     }
 
-    const int displayCount = std::max(SDL_GetNumVideoDisplays(), 1);
+    const int displayCount = (std::max)(SDL_GetNumVideoDisplays(), 1);
     selectedDisplay_ = std::clamp(selectedDisplay_, 0, displayCount - 1);
     const char* selectedName = SDL_GetDisplayName(selectedDisplay_);
+
     std::string preview = selectedName != nullptr
         ? std::to_string(selectedDisplay_ + 1) + ": " + selectedName
         : "Ekran " + std::to_string(selectedDisplay_ + 1);
@@ -617,12 +650,39 @@ void Application::playResolvedMedia(const YouTubeMedia& media)
         return;
     }
     currentTitle_ = media.title;
-    setStatus("YouTube 360 video oynatiliyor: " + media.title);
+
+    // yt-dlp "projection" alanina gore projeksiyon modunu otomatik sec.
+    // "equirectangular" -> 360 derece, "cubemap" -> EAC cubemap,
+    // "flat" -> 2D video.
+    switch (media.projectionType) {
+    case VideoProjection::CubemapEac:
+        renderSettings_.projection = ProjectionMode::CubemapEac;
+        setStatus("YouTube Cubemap (EAC) 360 video oynatiliyor: " + media.title);
+        break;
+    case VideoProjection::Equirectangular:
+        renderSettings_.projection = ProjectionMode::Mono360;
+        setStatus("YouTube 360 video oynatiliyor: " + media.title);
+        break;
+    case VideoProjection::Mesh:
+        // Mesh projeksiyonu icin equirectangular varsayilan olarak kullanilir.
+        renderSettings_.projection = ProjectionMode::Mono360;
+        setStatus("YouTube mesh 360 video oynatiliyor: " + media.title);
+        break;
+    case VideoProjection::Flat:
+        renderSettings_.projection = ProjectionMode::Mono360;
+        setStatus("YouTube 2D video oynatiliyor: " + media.title);
+        break;
+    case VideoProjection::Unknown:
+    default:
+        setStatus("YouTube video oynatiliyor: " + media.title);
+        break;
+    }
 }
 
 void Application::playLocalFile(const std::filesystem::path& path)
 {
     std::string playbackError;
+
     if (!video_.playFile(path, playbackError)) {
         setError(playbackError);
         return;
@@ -639,8 +699,9 @@ void Application::enterVrMode()
     }
     SDL_GetWindowPosition(window_, &windowedX_, &windowedY_);
     SDL_GetWindowSize(window_, &windowedWidth_, &windowedHeight_);
-    const int displayCount = std::max(SDL_GetNumVideoDisplays(), 1);
+    const int displayCount = (std::max)(SDL_GetNumVideoDisplays(), 1);
     selectedDisplay_ = std::clamp(selectedDisplay_, 0, displayCount - 1);
+
     SDL_Rect bounds {};
     if (SDL_GetDisplayBounds(selectedDisplay_, &bounds) == 0) {
         SDL_SetWindowPosition(window_, bounds.x + bounds.w / 2, bounds.y + bounds.h / 2);

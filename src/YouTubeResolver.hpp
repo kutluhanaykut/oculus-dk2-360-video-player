@@ -6,14 +6,28 @@
 
 namespace dk2vr {
 
+// yt-dlp "projection" alanindan tespit edilen video projeksiyon turu.
+enum class VideoProjection {
+    Unknown,
+    Equirectangular,
+    CubemapEac,
+    Mesh,
+    Flat,
+};
+
 struct YouTubeMedia {
     bool success {false};
     std::string title;
     std::string videoUrl;
     std::string audioUrl;
     std::map<std::string, std::string> httpHeaders;
+    // yt-dlp "projection" alani: "equirectangular" (360 derece),
+    // "cubemap" (EAC), "mesh", "flat" (2D) veya bos.
+    std::string projection;
+    VideoProjection projectionType {VideoProjection::Unknown};
     std::string error;
 };
+
 
 class YouTubeResolver {
 public:

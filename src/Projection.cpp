@@ -13,6 +13,7 @@ glm::vec2 mapProjectionUv(glm::vec2 uv, const ProjectionMode mode, const int eye
         uv.x = uv.x * 0.5F + eyeOffset;
         break;
     case ProjectionMode::Mono360:
+    case ProjectionMode::CubemapEac:
     default:
         break;
     }
@@ -26,10 +27,13 @@ std::string_view projectionName(const ProjectionMode mode) noexcept
         return "3D 360 - ust/alt";
     case ProjectionMode::StereoLeftRight:
         return "3D 360 - yan yana";
+    case ProjectionMode::CubemapEac:
+        return "Cubemap (EAC)";
     case ProjectionMode::Mono360:
     default:
         return "Mono 360";
     }
 }
+
 
 } // namespace dk2vr

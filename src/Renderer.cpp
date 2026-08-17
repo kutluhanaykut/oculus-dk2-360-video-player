@@ -13,7 +13,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <numbers>
 #include <string>
 #include <vector>
 
@@ -59,6 +58,101 @@ vec3 skyGradient(float latitude)
         smoothstep(0.5, 1.0, latitude));
 }
 
+// Convert an equirectangular UV (u = longitude, v = latitude) into a 3D
+// direction vector on the unit sphere. Matches the sphere vertex generation.
+vec3 equirectToDirection(vec2 uv)
+{
+    float theta = (uv.x - 0.5) * 6.28318530718;
+    float phi = uv.y * 3.14159265359;
+    float sinPhi = sin(phi);
+    return vec3(sinPhi * sin(theta), cos(phi), -sinPhi * cos(theta));
+}
+
+// Sample an EAC (Equi-Angular Cubemap) texture. The 6 cube faces are packed
+// into a 3x2 grid:
+//   Row 0: Left, Front, Right
+//   Row 1: Bottom, Back, Top
+
+// Each face uses the equi-angular mapping so that the angle subtended by a
+// pixel is constant across the face.
+
+
+//
+// Direction convention (matches equirectToDirection): -Z is the forward view
+// (theta = 0), +X is to the right, +Y is up.
+vec2 sampleEac(vec2 uv)
+{
+    vec3 d = equirectToDirection(uv);
+    float ax = abs(d.x);
+    float ay = abs(d.y);
+    float az = abs(d.z);
+
+    // Face-local coordinates in [-1, 1] before the equi-angular remap.
+    float u;
+    float v;
+    int faceIndex; // 0=Left, 1=Front, 2=Right, 3=Back, 4=Top, 5=Bottom
+
+    if (ax >= ay && ax >= az) {
+        // X-dominant face.
+        if (d.x > 0.0) {
+            faceIndex = 2; // Right (+X)
+            u = d.z / d.x;
+            v = -d.y / d.x;
+        } else {
+            faceIndex = 0; // Left (-X), flipped horizontally
+            u = d.z / d.x;
+            v = d.y / d.x;
+        }
+    } else if (ay >= ax && ay >= az) {
+        // Y-dominant face.
+        if (d.y > 0.0) {
+            faceIndex = 4; // Top (+Y), rotated 90 deg right
+            u = -d.z / d.y;
+            v = -d.x / d.y;
+        } else {
+            faceIndex = 5; // Bottom (-Y), rotated 180 deg
+            u = -d.z / d.y;
+            v = d.x / d.y;
+        }
+
+
+
+    } else {
+        // Z-dominant face.
+        if (d.z < 0.0) {
+            faceIndex = 1; // Front (-Z)
+            u = -d.x / d.z;
+            v = d.y / d.z;
+        } else {
+            faceIndex = 3; // Back (+Z), rotated 90 deg left
+            u = d.y / d.z;
+            v = -d.x / d.z;
+        }
+    }
+
+
+    // Equi-angular remap: angle is proportional to position on the face.
+    float faceU = 0.5 + 0.63661977236 * atan(u); // 2/pi
+    float faceV = 0.5 + 0.63661977236 * atan(v);
+
+    // Map face index to the 3x2 grid:
+    //   Row 0: Left, Front, Right
+    //   Row 1: Bottom, Back, Top
+    int gridX;
+    int gridY;
+    if (faceIndex == 0) { gridX = 0; gridY = 0; } // Left
+    else if (faceIndex == 1) { gridX = 1; gridY = 0; } // Front
+    else if (faceIndex == 2) { gridX = 2; gridY = 0; } // Right
+    else if (faceIndex == 3) { gridX = 1; gridY = 1; } // Back
+    else if (faceIndex == 4) { gridX = 2; gridY = 1; } // Top
+    else { gridX = 0; gridY = 1; } // Bottom
+    return vec2((float(gridX) + faceU) / 3.0, (float(gridY) + faceV) / 2.0);
+
+
+
+}
+
+
 void main()
 {
     vec2 uv = vUv;
@@ -72,9 +166,14 @@ void main()
     }
 
     if (uHasVideo != 0) {
-        outColor = vec4(texture(uVideo, uv).rgb, 1.0);
+        if (uProjectionMode == 3) {
+            outColor = vec4(texture(uVideo, sampleEac(uv)).rgb, 1.0);
+        } else {
+            outColor = vec4(texture(uVideo, uv).rgb, 1.0);
+        }
         return;
     }
+
 
     // Calibration room shown until the first decoder frame arrives.
     vec3 base = skyGradient(uv.y);
@@ -212,8 +311,9 @@ unsigned compileShader(const GLenum type, const char* source, std::string& error
 
     GLint logLength = 0;
     glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &logLength);
-    std::string log(static_cast<std::size_t>(std::max(logLength, 1)), '\0');
+    std::string log(static_cast<std::size_t>((std::max)(logLength, 1)), '\0');
     glGetShaderInfoLog(shader, logLength, nullptr, log.data());
+
     glDeleteShader(shader);
     error = "OpenGL shader derleme hatasi: " + log;
     return 0;
@@ -245,8 +345,9 @@ unsigned createProgram(const char* vertexSource, const char* fragmentSource, std
     }
     GLint logLength = 0;
     glGetProgramiv(program, GL_INFO_LOG_LENGTH, &logLength);
-    std::string log(static_cast<std::size_t>(std::max(logLength, 1)), '\0');
+    std::string log(static_cast<std::size_t>((std::max)(logLength, 1)), '\0');
     glGetProgramInfoLog(program, logLength, nullptr, log.data());
+
     glDeleteProgram(program);
     error = "OpenGL program baglama hatasi: " + log;
     return 0;
@@ -348,12 +449,12 @@ bool Renderer::createSphere(std::string& /*error*/)
 
     for (unsigned latitude = 0; latitude <= latitudeSegments; ++latitude) {
         const float v = static_cast<float>(latitude) / static_cast<float>(latitudeSegments);
-        const float phi = v * std::numbers::pi_v<float>;
+        const float phi = v * 3.14159265358979323846F;
         const float sinPhi = std::sin(phi);
         const float cosPhi = std::cos(phi);
         for (unsigned longitude = 0; longitude <= longitudeSegments; ++longitude) {
             const float u = static_cast<float>(longitude) / static_cast<float>(longitudeSegments);
-            const float theta = (u - 0.5F) * 2.0F * std::numbers::pi_v<float>;
+            const float theta = (u - 0.5F) * 2.0F * 3.14159265358979323846F;
             const glm::vec3 position(
                 radius * sinPhi * std::sin(theta),
                 radius * cosPhi,
@@ -717,7 +818,8 @@ void Renderer::destroyEyeTargets()
 void Renderer::renderSphereEye(const int eye, const int width, const int height,
     const glm::quat& orientation, const RenderSettings& settings)
 {
-    const float aspect = static_cast<float>(width) / static_cast<float>(std::max(height, 1));
+    const float aspect = static_cast<float>(width) / static_cast<float>((std::max)(height, 1));
+
     const glm::mat4 projection = glm::perspective(
         glm::radians(std::clamp(settings.fovDegrees, 60.0F, 130.0F)), aspect, 0.01F, 50.0F);
     const glm::mat4 view = glm::mat4_cast(glm::conjugate(glm::normalize(orientation)));

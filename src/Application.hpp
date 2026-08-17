@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DriverInstaller.hpp"
 #include "HmdManager.hpp"
 #include "Renderer.hpp"
 #include "VideoPlayer.hpp"
@@ -67,6 +68,7 @@ private:
     int windowedHeight_ {720};
 
     HmdManager hmd_;
+    DriverInstaller driverInstaller_;
     Renderer renderer_;
     VideoPlayer video_;
     YouTubeResolver resolver_;
@@ -82,6 +84,7 @@ private:
     std::string error_;
     std::future<YouTubeMedia> resolutionFuture_;
     bool resolving_ {false};
+    bool autoProjectionPending_ {false};
 
 
     float mouseYaw_ {0.0F};

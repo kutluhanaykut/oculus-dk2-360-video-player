@@ -12,6 +12,8 @@ enum class ProjectionMode : std::int32_t {
     StereoTopBottom = 1,
     StereoLeftRight = 2,
     CubemapEac = 3,
+    Fisheye180 = 4,
+    Fisheye180Sbs = 5,
 };
 
 

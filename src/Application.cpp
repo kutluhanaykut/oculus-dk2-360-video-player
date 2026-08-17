@@ -332,6 +332,12 @@ void Application::handleEvent(const SDL_Event& event)
         case SDLK_4:
             renderSettings_.projection = ProjectionMode::CubemapEac;
             break;
+        case SDLK_5:
+            renderSettings_.projection = ProjectionMode::Fisheye180;
+            break;
+        case SDLK_6:
+            renderSettings_.projection = ProjectionMode::Fisheye180Sbs;
+            break;
         case SDLK_d:
 
             renderSettings_.distortionEnabled = !renderSettings_.distortionEnabled;
@@ -383,6 +389,37 @@ void Application::renderFrame()
         return;
     }
 
+    // Yerel dosya acildiginda ilk kare gelince cozunurluge gore projeksiyon
+    // modunu otomatik sec. 4K ve uzeri cozunurlukler genellikle Cubemap (EAC)
+    // veya 180 derece videolardir; en-boy oranina gore tahmin yapilir.
+    if (autoProjectionPending_ && renderer_.hasVideoFrame()) {
+        autoProjectionPending_ = false;
+        const unsigned videoWidth = renderer_.videoWidth();
+        const unsigned videoHeight = renderer_.videoHeight();
+        if (videoWidth >= 3840 || videoHeight >= 2160) {
+            // 4K ve uzeri: en-boy oranina gore tahmin et.
+            const float aspect = videoHeight > 0
+                ? static_cast<float>(videoWidth) / static_cast<float>(videoHeight)
+                : 0.0F;
+            if (aspect > 1.7F && aspect < 2.3F) {
+                // ~2:1 oran -> 360 derece equirectangular.
+                renderSettings_.projection = ProjectionMode::Mono360;
+                setStatus("4K 360 video algilandi; Mono 360 projeksiyonu otomatik secildi.");
+            } else if (aspect > 0.9F && aspect < 1.1F) {
+                // ~1:1 oran -> 180 derece SBS 3D (her goz yarim kare).
+                renderSettings_.projection = ProjectionMode::Fisheye180Sbs;
+                setStatus("4K 180 derece SBS 3D video algilandi; 180 derece SBS projeksiyonu otomatik secildi.");
+            } else {
+                // 16:9 veya diger oranlar -> 180 derece SBS veya Cubemap.
+                renderSettings_.projection = ProjectionMode::Fisheye180Sbs;
+                setStatus("4K 180 derece video algilandi; 180 derece SBS projeksiyonu otomatik secildi.");
+            }
+        } else {
+            renderSettings_.projection = ProjectionMode::Mono360;
+            setStatus("Video cozunurlugu 4K degil; Mono 360 projeksiyonu kullaniliyor.");
+        }
+    }
+
     const glm::quat orientation = viewOrientation();
     if (vrMode_) {
         renderer_.renderVr(width, height, orientation, renderSettings_);
@@ -429,7 +466,7 @@ void Application::renderUserInterface()
         ImGui::TextWrapped("%s", status_.c_str());
         ImGui::PopStyleColor();
     }
-    ImGui::TextDisabled("Kisayol: F11 VR | Space duraklat | R merkez | <-/-> 10 sn | 1/2/3/4 format");
+    ImGui::TextDisabled("Kisayol: F11 VR | Space duraklat | R merkez | <-/-> 10 sn | 1-6 format");
 
     ImGui::End();
 }
@@ -519,30 +556,12 @@ void Application::drawSettings()
 {
     int projection = static_cast<int>(renderSettings_.projection);
     constexpr const char* projectionNames[] {
-        "Mono 360", "3D 360 ust/alt", "3D 360 yan yana", "Cubemap (EAC)"};
+        "Mono 360", "3D 360 ust/alt", "3D 360 yan yana", "Cubemap (EAC)",
+        "180 derece (mono)", "180 derece SBS 3D"};
     ImGui::SetNextItemWidth(220.0F);
-    if (ImGui::Combo("Video yerlesimi", &projection, projectionNames,
+    if (ImGui::Combo("Projeksiyon", &projection, projectionNames,
             static_cast<int>(std::size(projectionNames)))) {
         renderSettings_.projection = static_cast<ProjectionMode>(projection);
-    }
-
-    // Hizli projeksiyon modu butonlari.
-    ImGui::Text("Projeksiyon:");
-    ImGui::SameLine();
-    if (ImGui::Button("Mono 360")) {
-        renderSettings_.projection = ProjectionMode::Mono360;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Ust/Alt 3D")) {
-        renderSettings_.projection = ProjectionMode::StereoTopBottom;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Yan Yana 3D")) {
-        renderSettings_.projection = ProjectionMode::StereoLeftRight;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cubemap (EAC)")) {
-        renderSettings_.projection = ProjectionMode::CubemapEac;
     }
 
 
@@ -619,6 +638,25 @@ void Application::drawDevicePanel()
         hmd_.recenter();
         mouseYaw_ = 0.0F;
         mousePitch_ = 0.0F;
+    }
+
+    // Otomatik WinUSB surucu kurulumu (Zadig yerine).
+    if (!hmd_.connected()) {
+        ImGui::Separator();
+        ImGui::TextDisabled("DK2 izleme cihazi WinUSB surucusune bagli degilse:");
+        if (ImGui::Button("DK2 WinUSB surucusunu otomatik kur", ImVec2(310.0F, 0.0F))) {
+            std::string driverError;
+            if (driverInstaller_.installDk2WinUsbDriver(driverError)) {
+                setStatus(driverInstaller_.lastMessage());
+            } else {
+                setError(driverError);
+            }
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Yonetici haklari gerekir");
+        if (!driverInstaller_.lastMessage().empty()) {
+            ImGui::TextWrapped("%s", driverInstaller_.lastMessage().c_str());
+        }
     }
 
     const int displayCount = (std::max)(SDL_GetNumVideoDisplays(), 1);
@@ -725,6 +763,8 @@ void Application::playLocalFile(const std::filesystem::path& path)
     }
     selectedFile_ = path;
     currentTitle_ = wideToUtf8(path.filename().wstring());
+    // Ilk kare gelince cozunurluge gore projeksiyon modunu otomatik sec.
+    autoProjectionPending_ = true;
     setStatus("Yerel 360 video oynatiliyor: " + currentTitle_);
 }
 

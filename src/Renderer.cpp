@@ -168,6 +168,22 @@ void main()
     if (uHasVideo != 0) {
         if (uProjectionMode == 3) {
             outColor = vec4(texture(uVideo, sampleEac(uv)).rgb, 1.0);
+        } else if (uProjectionMode == 4 || uProjectionMode == 5) {
+            // 180 derece video: yalnizca on yari kure video ile kaplanir.
+            // vUv.x 0.25..0.75 araligi (theta -90..+90 derece) on yari kureye
+            // karsilik gelir; arka yari (0..0.25 ve 0.75..1) siyah kalir.
+            if (uv.x < 0.25 || uv.x > 0.75) {
+                outColor = vec4(0.0, 0.0, 0.0, 1.0);
+                return;
+            }
+            vec2 videoUv = uv;
+            // On yariyi 0..1 araligina olcekle.
+            videoUv.x = (videoUv.x - 0.25) * 2.0;
+            if (uProjectionMode == 5) {
+                // SBS 3D: once goz sec, sonra yatayda 0..0.5 araligina sikistir.
+                videoUv.x = videoUv.x * 0.5 + float(uEye) * 0.5;
+            }
+            outColor = vec4(texture(uVideo, videoUv).rgb, 1.0);
         } else {
             outColor = vec4(texture(uVideo, uv).rgb, 1.0);
         }

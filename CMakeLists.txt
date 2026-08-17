@@ -128,6 +128,7 @@ target_include_directories(libusb_static PUBLIC
     ${libusb_SOURCE_DIR}
     ${libusb_SOURCE_DIR}/libusb
     ${libusb_SOURCE_DIR}/libusb/os
+    ${libusb_SOURCE_DIR}/msvc
 )
 
 target_compile_definitions(libusb_static PRIVATE
@@ -207,6 +208,7 @@ set(DK2VR_SOURCES
     src/Application.cpp
     src/HmdManager.cpp
     src/Dk2WinUsb.cpp
+    src/DriverInstaller.cpp
     src/Renderer.cpp
     src/VideoPlayer.cpp
     src/VlcApi.cpp

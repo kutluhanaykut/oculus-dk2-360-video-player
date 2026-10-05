@@ -1,4 +1,8 @@
+#include "ImuPacket.hpp"
+#include "OrientationFilter.hpp"
 #include "Projection.hpp"
+
+#include <cstdint>
 
 #include <cmath>
 #include <cstdlib>
@@ -84,6 +88,61 @@ int main()
         "_eac tag must select cubemap");
     require(guessProjection("1800p_trip.mp4", 3840, 1920) == ProjectionMode::Mono360,
         "Numbers that only contain 180 must not count as a 180 tag");
+
+    // DK2 IMU paket cozucu.
+    {
+        std::uint8_t report[64] {};
+        report[0] = 0x0B;
+        report[3] = 2;
+        report[8] = 0x40;
+        report[9] = 0x42;
+        report[10] = 0x0F; // 1000000 us
+        for (std::size_t index = 12; index < 12 + 32; ++index) {
+            report[index] = 0xFF; // every packed 21-bit value is -1
+        }
+        const dk2vr::ImuPacket packet = dk2vr::parseImuPacket(report, sizeof(report));
+        require(packet.valid && packet.isDk2Format && packet.sampleCount == 2,
+            "DK2 report with two samples must decode");
+        require(packet.timestampMicros == 1000000U, "DK2 timestamp must be little-endian microseconds");
+        require(packet.samples[1].gyro[2] == -1 && packet.samples[0].accel[0] == -1,
+            "Packed 21-bit values must be sign-extended");
+        require(dk2vr::parseImuPacket(report, 20).sampleCount == 0
+                && !dk2vr::parseImuPacket(report, 20).valid,
+            "Samples beyond a short transfer must not be read");
+        report[0] = 0x02;
+        require(!dk2vr::parseImuPacket(report, sizeof(report)).valid,
+            "Non-IMU reports must be rejected");
+    }
+
+    // Yon filtresi: jiroskop entegrasyonu, yercekimi duzeltmesi, yalnizca yaw merkezleme.
+    {
+        using dk2vr::Vec3;
+        dk2vr::OrientationFilter filter;
+        for (int step = 0; step < 1000; ++step) {
+            filter.integrateGyro(Vec3 {0.0, 1.0, 0.0}, 0.001);
+        }
+        require(std::abs(dk2vr::extractYaw(filter.orientation()) - 1.0) < 1e-3,
+            "1 rad/s about +Y for 1 s must yield 1 rad of yaw");
+
+        // Estimate tilted by 0.3 rad while the headset actually sits level:
+        // gravity must pull the horizon back without changing yaw.
+        filter.integrateGyro(Vec3 {0.3, 0.0, 0.0}, 1.0);
+        for (int step = 0; step < 10000; ++step) {
+            filter.applyGravity(Vec3 {0.0, 9.80665, 0.0}, 0.001);
+        }
+        const Vec3 up = dk2vr::rotate(filter.orientation(), Vec3 {0.0, 1.0, 0.0});
+        require(up.y > 0.9999 && filter.hasGravityLock(), "Gravity must level the horizon");
+        require(std::abs(dk2vr::extractYaw(filter.orientation()) - 1.0) < 1e-2,
+            "Gravity correction must not change yaw");
+
+        filter.integrateGyro(Vec3 {0.3, 0.0, 0.0}, 1.0);
+        const double pitchBefore = dk2vr::rotate(filter.orientation(), Vec3 {0.0, 0.0, -1.0}).y;
+        filter.recenter();
+        const dk2vr::Quat centered = filter.orientation();
+        require(std::abs(dk2vr::extractYaw(centered)) < 1e-6, "Recenter must cancel yaw");
+        require(std::abs(dk2vr::rotate(centered, Vec3 {0.0, 0.0, -1.0}).y - pitchBefore) < 1e-6,
+            "Recenter must keep pitch");
+    }
 
     std::cout << "All DK2VR core tests passed.\n";
     return EXIT_SUCCESS;

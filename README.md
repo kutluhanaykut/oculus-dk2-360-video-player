@@ -22,6 +22,9 @@ Açık kaynak kodlu, yalnızca **Oculus Rift DK2** için tasarlanmış, **Window
 │   ├── VlcApi.*           # libvlc.dll dinamik yükleyici
 │   ├── YouTubeResolver.*  # yt-dlp üzerinden video/ses URL çözümü
 │   ├── HmdManager.*       # OpenHMD jiroskop erişimi
+│   ├── Dk2WinUsb.*        # WinUSB'deki DK2'ye libusb ile doğrudan erişim
+│   ├── OrientationFilter.*# jiroskop + yerçekimi yön filtresi
+│   ├── ImuPacket.*        # DK1/DK2 IMU rapor çözücü
 │   ├── DriverInstaller.*  # DK2 WinUSB sürücüsünü otomatik kurar (pnputil)
 │   ├── FileDialog.*       # Windows dosya seçici
 │   ├── Process.*          # harici process, UTF-8 ↔ wide dönüşümü
@@ -116,33 +119,30 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Configuration Release
 
 ## DK2 bağlantı notları
 - DK2'de iki kablo vardır: HDMI (veya DVI adaptör) ve USB. USB jiroskop için gereklidir; **konum kamerası** gerekmez (yazılım bunu kullanmaz).
-- Yönelim verisi OpenHMD'nin `drv_oculus_rift` sürücüsüyle okunur. `DK2'yi yeniden tara` düğmesi, cihazı yazılıma yeniden tanıtır.
+- Yönelim verisi iki yoldan okunur: izleme cihazı Windows HID sürücüsündeyse **OpenHMD** (`drv_oculus_rift`), **WinUSB** sürücüsündeyse uygulamanın kendi **libusb** yolu. libusb yolu jiroskopu ivmeölçerle (yerçekimi) düzeltir; eğim/yuvarlanma kaymaz, yaw yavaşça kayabilir (`R` ile sıfırlanır). `DK2'yi yeniden tara` düğmesi cihazı yeniden açar.
 - Windows ekran ayarlarında DK2'yi **genişletilmiş** ve **75 Hz** olarak ayarlamak en iyi deneyimi verir; tam ekran modu 75 Hz'e sabitlenmiştir.
 
 ### "Dahili jiroskop: DK2 BULUNAMADI" hatası çözümü
-Bu hata, DK2'nin USB izleme (tracking) cihazının Windows tarafından doğru sürücüyle tanınmadığını gösterir. DK2'nin IMU/jiroskop verisine erişmek için USB cihazının **WinUSB** veya **libusb-win32** sürücüsüne bağlanmış olması gerekir.
+DK2 USB'de iki cihaz olarak görünür; ikisi de VID `2833`:
 
-**Adım adım çözüm:**
+| PID | Cihaz | Sürücü |
+|-----|-------|--------|
+| `0021` | **Rift DK2** izleme cihazı (IMU/jiroskop) | WinUSB (önerilen) veya Windows HID |
+| `2021` | DK2'nin içindeki **USB hub** | Windows'un kendi hub sürücüsü — **asla değiştirmeyin** |
 
-1. **DK2'nin USB kablosunun bağlı olduğunu doğrulayın.** Windows Aygıt Yöneticisi'nde (Device Manager) DK2'ye ait cihazları arayın. Oculus DK2 genellikle şu şekilde görünür:
-   - "Oculus VR" veya "Rift DK2" adında bir USB cihazı
-   - VID `2833`, PID `0021` veya `2021`
+> **Uyarı:** Zadig veya başka bir araçla PID `2021`'in (hub) sürücüsünü değiştirmek, arkasındaki izleme cihazının bağlantısını keser.
 
-2. **Otomatik sürücü kurulumu (önerilen):** Uygulamayı **Yönetici olarak çalıştırın**, **"DK2 ve ekran"** panelindeki **"DK2 WinUSB sürücüsünü otomatik kur"** düğmesine tıklayın. Uygulama, DK2'nin VID/PID'sini hedefleyen bir INF dosyası oluşturur ve `pnputil` ile WinUSB sürücüsünü otomatik kurar — Zadig'e gerek kalmaz.
+**Önerilen kurulum: izleme cihazı (PID `0021`) WinUSB'de.** SteamVR için `dk2vr` sürücüsü de bu kurulumu kullanır; ikisi aynı sürücüyle çalışır (aynı anda değil: cihazı bir seferde tek program açabilir).
 
-3. **Oculus 0.8 runtime kurun.** Bu, DK2'nin USB izleme cihazını otomatik olarak WinUSB sürücüsüne bağlar.
+1. **DK2'nin USB kablosunun bağlı olduğunu doğrulayın.** Aygıt Yöneticisi'nde "Rift DK2" (PID `0021`) görünmelidir.
+2. **Zadig ile WinUSB kurun:**
+   - [Zadig](https://zadig.akeo.ie/) aracını çalıştırın, "Options > List All Devices" seçin.
+   - Listeden **Rift DK2**'yi seçin ve USB ID'nin `2833 0021` olduğunu doğrulayın.
+   - Hedef sürücü olarak **WinUSB** seçip "Replace Driver"a tıklayın.
+3. **Alternatif — uygulama içi kurulum:** Uygulamayı **Yönetici olarak** çalıştırıp "DK2 WinUSB sürücüsünü otomatik kur" düğmesine basın. Oluşturulan INF imzasız olduğundan Windows 11 bunu reddedebilir; bu durumda Zadig'i kullanın.
+4. **Uygulamayı yeniden başlatın** ve "DK2'yi yeniden tara" düğmesine basın.
 
-4. **Oculus runtime yoksa, Zadig ile sürücüyü değiştirin:**
-   - [Zadig](https://zadig.akeo.ie/) aracını indirin ve çalıştırın.
-   - Menüden "Options > List All Devices" seçeneğini işaretleyin.
-   - Açılır listeden DK2 izleme cihazını seçin (VID `2833`).
-   - Hedef sürücü olarak **WinUSB** veya **libusb-win32** seçin.
-   - "Replace Driver" düğmesine tıklayın.
-
-5. **Windows Aygıt Yöneticisi'nden manuel sürücü değişimi:**
-   - DK2 izleme cihazına sağ tıklayın → "Sürücüyü güncelle" → "Bilgisayarımdan sürücüleri ara" → "Bilgisayarımdaki kullanılabilir sürücüler listesinden seçeyim" → **WinUSB** seçin.
-
-6. **Uygulamayı yeniden başlatın** ve "DK2'yi yeniden tara" düğmesine basın.
+İzleme cihazı Windows'un varsayılan HID sürücüsünde kalırsa uygulama onu OpenHMD ile açar; bu da çalışır, ancak SteamVR `dk2vr` sürücüsü WinUSB bekler.
 
 > **İpucu:** Uygulama, DK2VRPlayer.log dosyasına detaylı teşhis bilgisi yazar. DK2'nin USB cihazı bulunup bulunmadığını ve hangi sürücüye bağlı olduğunu bu logdan kontrol edebilirsiniz.
 

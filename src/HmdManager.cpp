@@ -59,9 +59,6 @@ bool HmdManager::initialize(std::string& error)
 
     if (winUsbDk2_->connect()) {
         switch (winUsbDk2_->backend()) {
-        case Dk2Backend::WinUsb:
-            activeBackend_ = "WinUSB (SetupAPI)";
-            break;
         case Dk2Backend::HidApi:
             activeBackend_ = "hidapi";
             break;
@@ -201,8 +198,8 @@ bool HmdManager::initializeOpenHmd(std::string& error)
     if (preferredVectorIndex < 0) {
         std::string detail = "OpenHMD " + std::to_string(count)
             + " aygit gordu; hicbirinde Oculus/Rift/DK2 ismi yok. "
-              "Windows'un DK2 USB aygitini WinUSB veya libusb-win32 ile eslediginden "
-              "emin olun (hidapi Windows HID surucusu DK2 izleme cihazini acamayabilir).";
+              "DK2 izleme cihazi WinUSB surucusundeyse bu beklenir (OpenHMD yalnizca "
+              "HID surucusunu gorur); libusb yolu denenecek.";
         lastError_ = detail;
         log::warning(detail);
         ohmd_ctx_destroy(context_);

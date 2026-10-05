@@ -208,6 +208,8 @@ set(DK2VR_SOURCES
     src/Application.cpp
     src/HmdManager.cpp
     src/Dk2WinUsb.cpp
+    src/ImuPacket.cpp
+    src/OrientationFilter.cpp
     src/DriverInstaller.cpp
     src/Renderer.cpp
     src/VideoPlayer.cpp
@@ -287,7 +289,8 @@ endif()
 
 if(DK2VR_BUILD_TESTS)
     enable_testing()
-    add_executable(DK2VRCoreTests tests/CoreTests.cpp src/Projection.cpp)
+    add_executable(DK2VRCoreTests tests/CoreTests.cpp src/Projection.cpp
+        src/ImuPacket.cpp src/OrientationFilter.cpp)
     target_include_directories(DK2VRCoreTests PRIVATE src)
     target_link_libraries(DK2VRCoreTests PRIVATE glm::glm)
     if(MSVC)

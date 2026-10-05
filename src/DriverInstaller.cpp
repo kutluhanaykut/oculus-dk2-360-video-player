@@ -4,24 +4,11 @@
 #include "Process.hpp"
 
 #include <Windows.h>
-#include <setupapi.h>
-#include <winusb.h>
-#include <usbiodef.h>
 
-#include <algorithm>
 #include <fstream>
-#include <sstream>
-#include <vector>
 
 namespace dk2vr {
 namespace {
-
-// {A5DCBF10-6530-11D2-901F-00C04FB951ED} is GUID_DEVINTERFACE_USB_DEVICE.
-const GUID kUsbDeviceInterfaceGuid = {
-    0xA5DCBF10, 0x6530, 0x11D2, {0x90, 0x1F, 0x00, 0xC0, 0x4F, 0xB9, 0x51, 0xED}};
-
-constexpr std::uint16_t kOculusVendorId = 0x2833;
-constexpr std::uint16_t kDk2ProductIds[] = {0x0021, 0x2021};
 
 // Returns the directory containing the current executable.
 std::filesystem::path executableDirectory()
@@ -51,81 +38,11 @@ bool DriverInstaller::isElevated()
     return ok != FALSE && elevation.TokenIsElevated != 0;
 }
 
-bool DriverInstaller::isDk2WinUsbBound()
-{
-    HDEVINFO deviceInfoSet = SetupDiGetClassDevs(
-        &kUsbDeviceInterfaceGuid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-    if (deviceInfoSet == INVALID_HANDLE_VALUE) {
-        return false;
-    }
-
-    SP_DEVICE_INTERFACE_DATA interfaceData {};
-    interfaceData.cbSize = sizeof(interfaceData);
-
-    bool found = false;
-    for (int deviceIndex = 0;
-         SetupDiEnumDeviceInterfaces(deviceInfoSet, nullptr, &kUsbDeviceInterfaceGuid,
-             deviceIndex, &interfaceData);
-         ++deviceIndex) {
-        DWORD requiredSize = 0;
-        if (!SetupDiGetDeviceInterfaceDetailW(deviceInfoSet, &interfaceData, nullptr, 0,
-                &requiredSize, nullptr)
-            || requiredSize == 0) {
-            continue;
-        }
-
-        std::vector<std::uint8_t> buffer(requiredSize, 0);
-        auto* detailData = reinterpret_cast<PSP_DEVICE_INTERFACE_DETAIL_DATA_W>(buffer.data());
-        detailData->cbSize = sizeof(*detailData);
-        if (!SetupDiGetDeviceInterfaceDetailW(deviceInfoSet, &interfaceData, detailData,
-                requiredSize, nullptr, nullptr)) {
-            continue;
-        }
-
-        // Try to open the device. If it opens and WinUsb_Initialize succeeds,
-        // the device is bound to WinUSB.
-        HANDLE deviceHandle = CreateFileW(detailData->DevicePath,
-            GENERIC_WRITE | GENERIC_READ,
-            FILE_SHARE_WRITE | FILE_SHARE_READ,
-            nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
-        if (deviceHandle == INVALID_HANDLE_VALUE) {
-            continue;
-        }
-
-        WINUSB_INTERFACE_HANDLE winUsbHandle = nullptr;
-        if (!WinUsb_Initialize(deviceHandle, &winUsbHandle)) {
-            CloseHandle(deviceHandle);
-            continue;
-        }
-
-        USB_DEVICE_DESCRIPTOR descriptor {};
-        unsigned long lengthTransferred = 0;
-        const bool descriptorOk = WinUsb_GetDescriptor(winUsbHandle,
-            USB_DEVICE_DESCRIPTOR_TYPE, 0, 0,
-            reinterpret_cast<unsigned char*>(&descriptor), sizeof(descriptor),
-            &lengthTransferred);
-        if (descriptorOk && descriptor.idVendor == kOculusVendorId) {
-            const bool productMatch = std::find(std::begin(kDk2ProductIds),
-                std::end(kDk2ProductIds), descriptor.idProduct) != std::end(kDk2ProductIds);
-            if (productMatch) {
-                found = true;
-            }
-        }
-
-        WinUsb_Free(winUsbHandle);
-        CloseHandle(deviceHandle);
-        if (found) {
-            break;
-        }
-    }
-
-    SetupDiDestroyDeviceInfoList(deviceInfoSet);
-    return found;
-}
-
 bool DriverInstaller::writeInfFile(const std::filesystem::path& infPath, std::string& error)
 {
-    // WinUSB INF for the Oculus Rift DK2 tracking device (VID 2833, PID 0021/2021).
+    // WinUSB INF for the Oculus Rift DK2 tracking device (VID 2833, PID 0021).
+    // PID 2021 is the hub inside the headset: binding WinUSB to it would cut
+    // off the tracker behind it, so it must never be listed here.
     const std::string infContent =
         "[Version]\r\n"
         "Signature=\"$Windows NT$\"\r\n"
@@ -139,7 +56,6 @@ bool DriverInstaller::writeInfFile(const std::filesystem::path& infPath, std::st
         "\r\n"
         "[DeviceList.NTamd64]\r\n"
         "%DeviceName%=DriverInstall, USB\\VID_2833&PID_0021\r\n"
-        "%DeviceName%=DriverInstall, USB\\VID_2833&PID_2021\r\n"
         "\r\n"
         "[DriverInstall]\r\n"
         "Include=winusb.inf\r\n"

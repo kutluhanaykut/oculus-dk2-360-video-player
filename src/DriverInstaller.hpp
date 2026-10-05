@@ -14,10 +14,6 @@ public:
     // Returns true if the current process is running with administrator rights.
     [[nodiscard]] static bool isElevated();
 
-    // Checks whether the DK2 tracking device is currently bound to WinUSB.
-    // Returns true if the device is present and bound to WinUSB.
-    [[nodiscard]] static bool isDk2WinUsbBound();
-
     // Installs the WinUSB driver for the DK2 tracking device.
     // Returns true on success, false on failure (error is filled in).
     [[nodiscard]] bool installDk2WinUsbDriver(std::string& error);

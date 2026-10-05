@@ -156,13 +156,15 @@ vec2 sampleEac(vec2 uv)
 void main()
 {
     vec2 uv = vUv;
+    // Flip before picking the eye half; flipping afterwards would swap the
+    // top/bottom eyes.
+    if (uFlipVertical != 0) {
+        uv.y = 1.0 - uv.y;
+    }
     if (uProjectionMode == 1) {
         uv.y = uv.y * 0.5 + float(uEye) * 0.5;
     } else if (uProjectionMode == 2) {
         uv.x = uv.x * 0.5 + float(uEye) * 0.5;
-    }
-    if (uFlipVertical != 0) {
-        uv.y = 1.0 - uv.y;
     }
 
     if (uHasVideo != 0) {
@@ -234,6 +236,19 @@ void main()
     vec2 position = positions[gl_VertexID];
     vUv = position * 0.5 + 0.5;
     gl_Position = vec4(position, 0.0, 1.0);
+}
+)glsl";
+
+// Copies one eye texture into the current viewport. Core profile has no
+// fixed-function quads, so eye blits go through the fullscreen triangle.
+constexpr char blitFragmentShader[] = R"glsl(
+#version 330 core
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uSource;
+void main()
+{
+    outColor = vec4(texture(uSource, vUv).rgb, 1.0);
 }
 )glsl";
 
@@ -429,6 +444,10 @@ void Renderer::shutdown()
         glDeleteVertexArrays(1, &sphereVao_);
         sphereVao_ = 0;
     }
+    if (blitProgram_ != 0) {
+        glDeleteProgram(blitProgram_);
+        blitProgram_ = 0;
+    }
     if (distortionProgram_ != 0) {
         glDeleteProgram(distortionProgram_);
         distortionProgram_ = 0;
@@ -450,7 +469,11 @@ bool Renderer::createPrograms(std::string& error)
         return false;
     }
     distortionProgram_ = createProgram(fullscreenVertexShader, distortionFragmentShader, error);
-    return distortionProgram_ != 0;
+    if (distortionProgram_ == 0) {
+        return false;
+    }
+    blitProgram_ = createProgram(fullscreenVertexShader, blitFragmentShader, error);
+    return blitProgram_ != 0;
 }
 
 bool Renderer::createSphere(std::string& /*error*/)
@@ -608,36 +631,17 @@ void Renderer::renderAnaglyph(const int width, const int height,
     glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    const float halfWidth = static_cast<float>(width);
-    const float halfHeight = static_cast<float>(height);
-    glMatrixMode(GL_PROJECTION);
-    glPushMatrix();
-    glLoadIdentity();
-    glOrtho(0.0F, halfWidth, halfHeight, 0.0F, -1.0F, 1.0F);
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE);
-
+    // The color masks keep the two passes in separate channels, so no
+    // blending is needed.
     // Red channel from the left eye.
-    glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_TRUE);
+    glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_FALSE);
     blitEye(eyes_[0].colorTexture, 0, 0, width, height);
 
     // Cyan (green+blue) channels from the right eye.
-    glColorMask(GL_FALSE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glColorMask(GL_FALSE, GL_TRUE, GL_TRUE, GL_FALSE);
     blitEye(eyes_[1].colorTexture, 0, 0, width, height);
 
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glDisable(GL_BLEND);
-
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
-    glPopMatrix();
-    (void)halfWidth;
-    (void)halfHeight;
 }
 
 void Renderer::renderSideBySide(const int width, const int height,
@@ -670,23 +674,21 @@ void Renderer::renderSideBySide(const int width, const int height,
 void Renderer::blitEye(const unsigned colorTexture, const int x, const int y,
     const int width, const int height)
 {
-    if (colorTexture == 0) {
+    if (colorTexture == 0 || blitProgram_ == 0 || width <= 0 || height <= 0) {
         return;
     }
+    // x/y are in GL window coordinates (origin bottom-left). The eye texture
+    // was rendered by GL too, so it is sampled without a vertical flip.
+    glViewport(x, y, width, height);
+    glUseProgram(blitProgram_);
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, colorTexture);
-    glEnable(GL_TEXTURE_2D);
-    glBegin(GL_QUADS);
-    const float u0 = 0.0F;
-    const float u1 = 1.0F;
-    const float v0 = 1.0F;
-    const float v1 = 0.0F;
-    glTexCoord2f(u0, v0); glVertex2i(x, y);
-    glTexCoord2f(u1, v0); glVertex2i(x + width, y);
-    glTexCoord2f(u1, v1); glVertex2i(x + width, y + height);
-    glTexCoord2f(u0, v1); glVertex2i(x, y + height);
-    glEnd();
-    glDisable(GL_TEXTURE_2D);
+    glUniform1i(glGetUniformLocation(blitProgram_, "uSource"), 0);
+    glBindVertexArray(fullscreenVao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
+    glUseProgram(0);
 }
 
 void Renderer::renderMirror(const int framebufferWidth, const int framebufferHeight,
@@ -867,6 +869,11 @@ bool Renderer::initialized() const noexcept
 bool Renderer::hasVideoFrame() const noexcept
 {
     return hasVideoFrame_;
+}
+
+void Renderer::resetVideoFrame() noexcept
+{
+    hasVideoFrame_ = false;
 }
 
 unsigned Renderer::videoWidth() const noexcept

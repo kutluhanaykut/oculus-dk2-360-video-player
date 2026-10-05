@@ -389,35 +389,16 @@ void Application::renderFrame()
         return;
     }
 
-    // Yerel dosya acildiginda ilk kare gelince cozunurluge gore projeksiyon
-    // modunu otomatik sec. 4K ve uzeri cozunurlukler genellikle Cubemap (EAC)
-    // veya 180 derece videolardir; en-boy oranina gore tahmin yapilir.
+    // Yerel dosya acildiginda ilk kare gelince projeksiyon modunu dosya adi
+    // etiketlerine (_TB, _SBS, _180 ...) ve en-boy oranina gore otomatik sec.
     if (autoProjectionPending_ && renderer_.hasVideoFrame()) {
         autoProjectionPending_ = false;
-        const unsigned videoWidth = renderer_.videoWidth();
-        const unsigned videoHeight = renderer_.videoHeight();
-        if (videoWidth >= 3840 || videoHeight >= 2160) {
-            // 4K ve uzeri: en-boy oranina gore tahmin et.
-            const float aspect = videoHeight > 0
-                ? static_cast<float>(videoWidth) / static_cast<float>(videoHeight)
-                : 0.0F;
-            if (aspect > 1.7F && aspect < 2.3F) {
-                // ~2:1 oran -> 360 derece equirectangular.
-                renderSettings_.projection = ProjectionMode::Mono360;
-                setStatus("4K 360 video algilandi; Mono 360 projeksiyonu otomatik secildi.");
-            } else if (aspect > 0.9F && aspect < 1.1F) {
-                // ~1:1 oran -> 180 derece SBS 3D (her goz yarim kare).
-                renderSettings_.projection = ProjectionMode::Fisheye180Sbs;
-                setStatus("4K 180 derece SBS 3D video algilandi; 180 derece SBS projeksiyonu otomatik secildi.");
-            } else {
-                // 16:9 veya diger oranlar -> 180 derece SBS veya Cubemap.
-                renderSettings_.projection = ProjectionMode::Fisheye180Sbs;
-                setStatus("4K 180 derece video algilandi; 180 derece SBS projeksiyonu otomatik secildi.");
-            }
-        } else {
-            renderSettings_.projection = ProjectionMode::Mono360;
-            setStatus("Video cozunurlugu 4K degil; Mono 360 projeksiyonu kullaniliyor.");
-        }
+        renderSettings_.projection = guessProjection(
+            wideToUtf8(selectedFile_.filename().wstring()),
+            renderer_.videoWidth(), renderer_.videoHeight());
+        setStatus("Projeksiyon otomatik secildi: "
+            + std::string(projectionName(renderSettings_.projection))
+            + " (yanlissa 1-6 tuslari ile degistirin).");
     }
 
     const glm::quat orientation = viewOrientation();
@@ -763,6 +744,7 @@ void Application::playLocalFile(const std::filesystem::path& path)
     }
     selectedFile_ = path;
     currentTitle_ = wideToUtf8(path.filename().wstring());
+    renderer_.resetVideoFrame();
     // Ilk kare gelince cozunurluge gore projeksiyon modunu otomatik sec.
     autoProjectionPending_ = true;
     setStatus("Yerel 360 video oynatiliyor: " + currentTitle_);

@@ -27,6 +27,9 @@ const GUID kUsbDeviceInterfaceGuid = {
 constexpr std::uint16_t kOculusVendorId = 0x2833;
 constexpr std::uint16_t kDk2ProductIds[] = {0x0021, 0x2021};
 constexpr std::uint8_t kDk2ImuEndpoint = 0x81;
+// Upper bound for one blocking read so the reader thread can notice
+// stopRequested_ and exit promptly.
+constexpr ULONG kReadTimeoutMs = 100;
 
 bool utf8FromWide(const std::wstring& source, std::string& destination)
 {
@@ -233,6 +236,15 @@ bool Dk2WinUsb::connectWinUsb()
             log::info("Dk2WinUsb(WinUSB): DK2 bulunamadi; hidapi yolu denenecek.");
         }
         return false;
+    }
+
+    // Without a pipe timeout WinUsb_ReadPipe blocks forever when the DK2 stops
+    // streaming, and disconnect() would hang joining the reader thread.
+    ULONG pipeTimeoutMs = kReadTimeoutMs;
+    if (!WinUsb_SetPipePolicy(static_cast<WINUSB_INTERFACE_HANDLE>(winUsbHandle_), kDk2ImuEndpoint,
+            PIPE_TRANSFER_TIMEOUT, sizeof(pipeTimeoutMs), &pipeTimeoutMs)) {
+        log::warning("Dk2WinUsb(WinUSB): okuma zaman asimi ayarlanamadi, hata="
+            + std::to_string(GetLastError()));
     }
 
     activeBackend_ = Dk2Backend::WinUsb;
@@ -449,6 +461,10 @@ bool Dk2WinUsb::connectLibusb()
 void Dk2WinUsb::disconnect()
 {
     stopRequested_ = true;
+    if (winUsbHandle_ != nullptr) {
+        // Cancels a read that is still in flight on the reader thread.
+        WinUsb_AbortPipe(static_cast<WINUSB_INTERFACE_HANDLE>(winUsbHandle_), kDk2ImuEndpoint);
+    }
     if (readerThread_.joinable()) {
         readerThread_.join();
     }
@@ -558,7 +574,9 @@ void Dk2WinUsb::readerLoop()
                 parseImuPacket(buffer, bytesRead);
             }
         } else if (activeBackend_ == Dk2Backend::HidApi && hidHandle_ != nullptr) {
-            const int bytesRead = hid_read(static_cast<hid_device*>(hidHandle_), buffer, sizeof(buffer));
+            // hid_read blocks indefinitely; a timeout keeps disconnect() responsive.
+            const int bytesRead = hid_read_timeout(static_cast<hid_device*>(hidHandle_), buffer,
+                sizeof(buffer), static_cast<int>(kReadTimeoutMs));
             if (bytesRead > 0) {
                 parseImuPacket(buffer, static_cast<std::size_t>(bytesRead));
             } else if (bytesRead < 0) {

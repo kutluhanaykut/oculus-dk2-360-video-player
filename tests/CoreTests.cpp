@@ -58,6 +58,33 @@ int main()
     require(dk2vr::projectionName(ProjectionMode::Fisheye180Sbs) == "180 derece SBS 3D",
         "180 SBS label must be correct");
 
+    // Otomatik projeksiyon tahmini: once dosya adi etiketleri, sonra en-boy orani.
+    using dk2vr::guessProjection;
+    require(guessProjection("trip.mp4", 3840, 1920) == ProjectionMode::Mono360,
+        "Untagged 2:1 video must be mono 360");
+    require(guessProjection("trip.mp4", 4096, 4096) == ProjectionMode::StereoTopBottom,
+        "Untagged 1:1 video must be 360 top/bottom 3D");
+    require(guessProjection("trip.mp4", 1536, 1024) == ProjectionMode::CubemapEac,
+        "Untagged 3:2 video must be EAC cubemap");
+    require(guessProjection("trip.mp4", 1280, 720) == ProjectionMode::Mono360,
+        "Low resolution must not force a different mode");
+    require(guessProjection("Concert_180_SBS.mp4", 5760, 2880) == ProjectionMode::Fisheye180Sbs,
+        "_180_SBS tag must select 180 SBS");
+    require(guessProjection("vr180 clip.mkv", 7680, 3840) == ProjectionMode::Fisheye180Sbs,
+        "Untagged-layout VR180 2:1 must select 180 SBS");
+    require(guessProjection("dome_180.mp4", 4096, 4096) == ProjectionMode::Fisheye180,
+        "Square 180 video must be 180 mono");
+    require(guessProjection("city_360_TB.mp4", 3840, 3840) == ProjectionMode::StereoTopBottom,
+        "_TB tag must select top/bottom");
+    require(guessProjection("city-top-bottom.mp4", 3840, 1920) == ProjectionMode::StereoTopBottom,
+        "top-bottom phrase must select top/bottom");
+    require(guessProjection("city_LR.mp4", 7680, 1920) == ProjectionMode::StereoLeftRight,
+        "_LR tag must select side-by-side 360");
+    require(guessProjection("yt_eac.webm", 3840, 2160) == ProjectionMode::CubemapEac,
+        "_eac tag must select cubemap");
+    require(guessProjection("1800p_trip.mp4", 3840, 1920) == ProjectionMode::Mono360,
+        "Numbers that only contain 180 must not count as a 180 tag");
+
     std::cout << "All DK2VR core tests passed.\n";
     return EXIT_SUCCESS;
 }

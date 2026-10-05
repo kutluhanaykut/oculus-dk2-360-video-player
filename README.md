@@ -89,11 +89,12 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Configuration Release
 
 1. DK2'yi bilgisayara bağlayın. Windows'un **genişletilmiş masaüstü** modunda, 1920×1080 (yatay) ve **75 Hz**'de bir ekran olarak tanıtılmalıdır (Rift Display için Oculus'un eski yazılımı veya Intel/Nvidia kenar boşluğu ayarı).
 2. `DK2VRPlayer.exe`'yi çalıştırın. Pencere otomatik olarak 1920×1080 çözünürlüğe gelir.
-3. **Yerel 360 video aç** düğmesiyle bir dosya seçin ya da pencereye sürükleyin; **YouTube** sekmesine bir 360 URL'si girip oynatın. Yerel video açıldığında çözünürlüğe göre projeksiyon modu otomatik seçilir:
-   - **4K ve üzeri, ~2:1 en-boy oranı** → **Mono 360** (360° equirectangular)
-   - **4K ve üzeri, ~16:9 veya ~1:1 en-boy oranı** → **180 derece SBS 3D**
-   - **4K ve üzeri, diğer oranlar** → **180 derece SBS 3D**
-   - **4K altı** → **Mono 360**
+3. **Yerel 360 video aç** düğmesiyle bir dosya seçin ya da pencereye sürükleyin; **YouTube** sekmesine bir 360 URL'si girip oynatın. Yerel video açıldığında projeksiyon modu önce dosya adı etiketlerine, yoksa en-boy oranına göre otomatik seçilir:
+   - Dosya adında `_180` / `vr180` → **180 derece SBS 3D** (kare görüntüde **180 derece mono**)
+   - `_TB`, `_OU`, `_3dv`, `top-bottom` → **3D 360 üst/alt**
+   - `_LR`, `_SBS`, `_3dh`, `side-by-side` → **3D 360 yan yana**
+   - `_EAC`, `cubemap` → **Cubemap (EAC)**
+   - Etiket yoksa: **~1:1** → **3D 360 üst/alt**, **~3:2** → **Cubemap (EAC)**, diğerleri (2:1 dahil) → **Mono 360**
    - İstediğiniz modu **"360 video ve lens ayarları"** panelindeki **Projeksiyon** açılır listesinden veya **1-6** tuşlarıyla manuel olarak da seçebilirsiniz.
    - **180 derece modlarında** video yalnızca ön yarım küreye yansıtılır; başınızı 180°'den fazla çevirdiğinizde arka taraf siyah kalır (360° sarmalama yok).
 4. **DK2 ekranında VR tam ekran (F11)** düğmesi (veya `F11` kısayolu) seçili HDMI ekranını tam ekran yapar, fare imleci gizlenir ve OpenHMD üzerinden okunan yönelim ile stereo görüntü hesaplanır. **Esc** veya `F11` ile geri dönülür.

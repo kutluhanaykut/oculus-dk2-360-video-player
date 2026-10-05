@@ -1,6 +1,56 @@
 #include "Projection.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <string>
+#include <vector>
+
 namespace dk2vr {
+namespace {
+
+// Lower-case alphanumeric words of a file name, e.g. "Trip_360_TB.mp4" ->
+// {"trip", "360", "tb", "mp4"}.
+std::vector<std::string> fileNameTokens(const std::string_view fileName)
+{
+    std::vector<std::string> tokens;
+    std::string current;
+    for (const char character : fileName) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (std::isalnum(byte) != 0) {
+            current.push_back(static_cast<char>(std::tolower(byte)));
+        } else if (!current.empty()) {
+            tokens.push_back(std::move(current));
+            current.clear();
+        }
+    }
+    if (!current.empty()) {
+        tokens.push_back(std::move(current));
+    }
+    return tokens;
+}
+
+bool hasAnyToken(const std::vector<std::string>& tokens,
+    std::initializer_list<std::string_view> wanted)
+{
+    return std::any_of(tokens.begin(), tokens.end(), [&](const std::string& token) {
+        return std::find(wanted.begin(), wanted.end(), token) != wanted.end();
+    });
+}
+
+// Words joined without separators so "top-bottom" and "side_by_side" match.
+bool hasJoinedPhrase(const std::vector<std::string>& tokens,
+    std::initializer_list<std::string_view> wanted)
+{
+    std::string joined;
+    for (const std::string& token : tokens) {
+        joined += token;
+    }
+    return std::any_of(wanted.begin(), wanted.end(), [&](const std::string_view phrase) {
+        return joined.find(phrase) != std::string::npos;
+    });
+}
+
+} // namespace
 
 glm::vec2 mapProjectionUv(glm::vec2 uv, const ProjectionMode mode, const int eye)
 {
@@ -46,6 +96,51 @@ std::string_view projectionName(const ProjectionMode mode) noexcept
     default:
         return "Mono 360";
     }
+}
+
+ProjectionMode guessProjection(
+    const std::string_view fileName, const unsigned width, const unsigned height)
+{
+    const float aspect = height > 0
+        ? static_cast<float>(width) / static_cast<float>(height)
+        : 0.0F;
+    const bool squareAspect = aspect > 0.9F && aspect < 1.1F;
+
+    const std::vector<std::string> tokens = fileNameTokens(fileName);
+    const bool topBottom = hasAnyToken(tokens, {"tb", "ou", "3dv", "topbottom", "overunder"})
+        || hasJoinedPhrase(tokens, {"topbottom", "overunder"});
+    const bool sideBySide = hasAnyToken(tokens, {"lr", "sbs", "3dh", "sidebyside"})
+        || hasJoinedPhrase(tokens, {"sidebyside", "leftright"});
+    const bool half = hasAnyToken(tokens, {"180", "vr180"});
+    const bool cubemap = hasAnyToken(tokens, {"eac", "cubemap"});
+
+    if (cubemap) {
+        return ProjectionMode::CubemapEac;
+    }
+    if (half) {
+        // VR180 is almost always side-by-side; a square 180 frame is mono.
+        if (sideBySide || (!topBottom && !squareAspect)) {
+            return ProjectionMode::Fisheye180Sbs;
+        }
+        return ProjectionMode::Fisheye180;
+    }
+    if (topBottom) {
+        return ProjectionMode::StereoTopBottom;
+    }
+    if (sideBySide) {
+        return ProjectionMode::StereoLeftRight;
+    }
+
+    // No tags: two stacked 2:1 equirect images give a 1:1 frame, which is the
+    // standard 360 3D top/bottom layout. 3:2 is the YouTube EAC grid. A 2:1
+    // frame is ambiguous (360 mono or VR180 SBS); mono 360 is the safer bet.
+    if (squareAspect) {
+        return ProjectionMode::StereoTopBottom;
+    }
+    if (aspect > 1.45F && aspect < 1.55F) {
+        return ProjectionMode::CubemapEac;
+    }
+    return ProjectionMode::Mono360;
 }
 
 

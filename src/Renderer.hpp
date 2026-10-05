@@ -61,6 +61,8 @@ public:
 
     [[nodiscard]] bool initialized() const noexcept;
     [[nodiscard]] bool hasVideoFrame() const noexcept;
+    // Forgets the current frame so the next upload is treated as a new video.
+    void resetVideoFrame() noexcept;
     [[nodiscard]] unsigned videoWidth() const noexcept;
     [[nodiscard]] unsigned videoHeight() const noexcept;
 
@@ -103,6 +105,7 @@ private:
 
     unsigned sphereProgram_ {0};
     unsigned distortionProgram_ {0};
+    unsigned blitProgram_ {0};
     unsigned sphereVao_ {0};
     unsigned sphereVbo_ {0};
     unsigned sphereEbo_ {0};

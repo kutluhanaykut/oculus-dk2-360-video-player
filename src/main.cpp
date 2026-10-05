@@ -3,6 +3,7 @@
 #include "Process.hpp"
 
 #include <Windows.h>
+#include <shellapi.h>
 
 #include <exception>
 #include <string>
@@ -20,6 +21,14 @@ int APIENTRY wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previousInstance*/,
             MessageBoxW(nullptr, wideError.c_str(), L"DK2 360 VR Player - Hata",
                 MB_OK | MB_ICONERROR);
             return 1;
+        }
+        // DK2VRPlayer.exe <youtube-url | video-file> starts playing it at once.
+        int argumentCount = 0;
+        if (wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount)) {
+            if (argumentCount > 1) {
+                application.openFromCommandLine(arguments[1]);
+            }
+            LocalFree(arguments);
         }
         return application.run();
     } catch (const std::exception& exception) {

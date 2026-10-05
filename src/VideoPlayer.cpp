@@ -88,6 +88,8 @@ void VideoPlayer::shutdown()
         libvlc_media_player_release(player_);
         player_ = nullptr;
     }
+    // After VLC has dropped its connections, so the relays end promptly.
+    rangeProxy_.stop();
     if (instance_ != nullptr) {
         libvlc_release(instance_);
         instance_ = nullptr;
@@ -128,13 +130,30 @@ bool VideoPlayer::playNetwork(
     const std::string& videoUrl,
     const std::string& audioUrl,
     const std::map<std::string, std::string>& httpHeaders,
+    const std::uint64_t httpChunkSize,
     std::string& error)
 {
     if (!initialized()) {
         error = "Video oynatici baslatilmadi.";
         return false;
     }
-    libvlc_media_t* media = libvlc_media_new_location(instance_, videoUrl.c_str());
+
+    // Streams that only serve bounded ranges (YouTube) go through the local
+    // proxy; VLC's own open-ended range request would get 403 Forbidden.
+    std::string playVideoUrl = videoUrl;
+    std::string playAudioUrl = audioUrl;
+    if (httpChunkSize > 0) {
+        if (!rangeProxy_.start(error)) {
+            return false;
+        }
+        rangeProxy_.clear();
+        playVideoUrl = rangeProxy_.serve(videoUrl, httpHeaders, httpChunkSize);
+        if (!audioUrl.empty() && audioUrl != videoUrl) {
+            playAudioUrl = rangeProxy_.serve(audioUrl, httpHeaders, httpChunkSize);
+        }
+    }
+
+    libvlc_media_t* media = libvlc_media_new_location(instance_, playVideoUrl.c_str());
     if (media == nullptr) {
         error = vlcError("Ag medyasi acilamadi.");
         return false;
@@ -154,7 +173,7 @@ bool VideoPlayer::playNetwork(
     }
     if (!audioUrl.empty() && audioUrl != videoUrl) {
         const int slaveResult = libvlc_media_slaves_add(
-            media, libvlc_media_slave_type_audio, 0, audioUrl.c_str());
+            media, libvlc_media_slave_type_audio, 0, playAudioUrl.c_str());
         if (slaveResult != 0) {
             log::warning("YouTube ses akisi media slave olarak eklenemedi.");
         }
@@ -191,6 +210,9 @@ void VideoPlayer::togglePause()
     const libvlc_state_t current = libvlc_media_player_get_state(player_);
     if (current == libvlc_Paused) {
         libvlc_media_player_set_pause(player_, 0);
+    } else if (current == libvlc_Stopped || current == libvlc_Ended) {
+        // Play again from the start after Stop or the end of the video.
+        libvlc_media_player_play(player_);
     } else if (current == libvlc_Playing || current == libvlc_Buffering) {
         libvlc_media_player_set_pause(player_, 1);
     }
@@ -279,11 +301,28 @@ bool VideoPlayer::initialized() const noexcept
 bool VideoPlayer::consumeLatestFrame(
     const std::function<void(const std::uint8_t*, unsigned, unsigned, unsigned)>& consumer)
 {
+    // Ask libVLC for the visible size outside the frame lock: the decoder
+    // thread holds that lock while it writes a picture.
+    unsigned visibleWidth = visibleWidth_;
+    unsigned visibleHeight = visibleHeight_;
+    if ((visibleWidth == 0 || visibleHeight == 0) && player_ != nullptr) {
+        unsigned width = 0;
+        unsigned height = 0;
+        if (libvlc_video_get_size(player_, 0, &width, &height) == 0 && width > 0 && height > 0) {
+            visibleWidth_ = visibleWidth = width;
+            visibleHeight_ = visibleHeight = height;
+        }
+    }
+
     std::scoped_lock lock(frameMutex_);
     if (producedFrame_ == consumedFrame_ || framePixels_.empty()) {
         return false;
     }
-    consumer(framePixels_.data(), frameWidth_, frameHeight_, framePitch_);
+    // The picture sits in the top-left of the padded buffer; the unchanged
+    // pitch lets the consumer skip the padding without copying.
+    const unsigned width = visibleWidth > 0 && visibleWidth <= frameWidth_ ? visibleWidth : frameWidth_;
+    const unsigned height = visibleHeight > 0 && visibleHeight <= frameHeight_ ? visibleHeight : frameHeight_;
+    consumer(framePixels_.data(), width, height, framePitch_);
     consumedFrame_ = producedFrame_;
     return true;
 }
@@ -314,6 +353,8 @@ unsigned VideoPlayer::formatSetup(void** opaque, char* chroma, unsigned* width, 
     self->framePixels_.assign(byteCount, 0);
     self->producedFrame_ = 0;
     self->consumedFrame_ = 0;
+    self->visibleWidth_ = 0;
+    self->visibleHeight_ = 0;
     return 1;
 }
 

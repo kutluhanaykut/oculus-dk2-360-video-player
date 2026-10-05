@@ -421,8 +421,10 @@ void Dk2WinUsb::handlePacket(const std::uint8_t* data, const std::size_t size)
         filter_.applyGravity(accel, dtPerSample);
     }
 
-    // Periodic log (every ~1000 reports) to confirm IMU data is flowing.
-    if ((++packetCount_ % 1000) == 0) {
+    // Confirms IMU data is flowing: once early, then about once a minute
+    // (the DK2 sends ~500 reports per second).
+    ++packetCount_;
+    if (packetCount_ == 1000 || (packetCount_ % 30000) == 0) {
         log::info(std::string("Dk2WinUsb: IMU paketleri isleniyor, yercekimi kilidi ")
             + (filter_.hasGravityLock() ? "var." : "henuz yok."));
     }

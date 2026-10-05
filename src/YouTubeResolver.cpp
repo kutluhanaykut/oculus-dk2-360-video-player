@@ -51,15 +51,26 @@ void collectFormat(const Json& format, YouTubeMedia& media)
     if (url.empty()) {
         return;
     }
+    bool used = false;
     if (hasVideo(format) && media.videoUrl.empty()) {
         media.videoUrl = url;
+        media.videoWidth = format.value("width", 0U);
+        media.videoHeight = format.value("height", 0U);
         readHeaders(format, media.httpHeaders);
+        used = true;
     }
     if (hasAudio(format) && !hasVideo(format) && media.audioUrl.empty()) {
         media.audioUrl = url;
+        used = true;
     }
-    if (hasVideo(format) && hasAudio(format) && media.videoUrl.empty()) {
-        media.videoUrl = url;
+    if (used) {
+        const auto options = format.find("downloader_options");
+        if (options != format.end() && options->is_object()) {
+            const auto chunk = options->find("http_chunk_size");
+            if (chunk != options->end() && chunk->is_number_unsigned()) {
+                media.httpChunkSize = (std::max)(media.httpChunkSize, chunk->get<std::uint64_t>());
+            }
+        }
     }
 }
 
@@ -83,7 +94,7 @@ YouTubeResolver::YouTubeResolver(std::filesystem::path executable)
 {
 }
 
-YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl) const
+YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl, const int maxHeight) const
 {
     YouTubeMedia media;
     if (!available()) {
@@ -101,7 +112,7 @@ YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl) const
         L"--quiet",
         L"--dump-single-json",
         L"--format",
-        L"bestvideo[height<=4320]+bestaudio/best[height<=4320]/best",
+        utf8ToWide(youtubeFormatSelector(maxHeight)),
         utf8ToWide(pageUrl),
     };
 
@@ -171,6 +182,26 @@ YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl) const
             media.error = "YouTube video akis adresi bulunamadi.";
             return media;
         }
+
+        // yt-dlp rarely fills "projection", but the stream URL carries
+        // YouTube's own tag (xtags=vproj=mesh). The VR clients serve 360
+        // videos as an EAC cubemap and VR180 as side-by-side halves, both
+        // tagged "mesh"; Application tells the two apart.
+        if (media.projectionType == VideoProjection::Unknown) {
+            const std::string urlLower = lowerCase(media.videoUrl);
+            if (urlLower.find("vproj%3dmesh") != std::string::npos) {
+                media.projectionType = VideoProjection::Mesh;
+            } else if (urlLower.find("vproj%3deac") != std::string::npos
+                || urlLower.find("vproj%3dcubemap") != std::string::npos) {
+                media.projectionType = VideoProjection::CubemapEac;
+            } else if (urlLower.find("vproj%3drectangular") != std::string::npos
+                || urlLower.find("vproj%3dequirectangular") != std::string::npos) {
+                media.projectionType = VideoProjection::Equirectangular;
+            }
+            if (media.projectionType != VideoProjection::Unknown) {
+                log::info("YouTube akis projeksiyon etiketi bulundu (vproj).");
+            }
+        }
         media.success = true;
         log::info("YouTube medya adresi basariyla cozuldu.");
     } catch (const std::exception& exception) {
@@ -188,6 +219,16 @@ bool YouTubeResolver::available() const
 const std::filesystem::path& YouTubeResolver::executable() const noexcept
 {
     return executable_;
+}
+
+std::string youtubeFormatSelector(const int maxHeight)
+{
+    const std::string cap = "[height<=" + std::to_string(maxHeight > 0 ? maxHeight : kDefaultYouTubeMaxHeight) + "]";
+    return "bestvideo" + cap + "[vcodec^=vp]+bestaudio"
+        + "/bestvideo" + cap + "[vcodec^=avc1]+bestaudio"
+        + "/bestvideo" + cap + "[vcodec!^=av01]+bestaudio"
+        + "/bestvideo" + cap + "+bestaudio"
+        + "/best" + cap + "/best";
 }
 
 bool isLikelyYouTubeUrl(const std::string& value)

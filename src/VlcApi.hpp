@@ -66,6 +66,7 @@ public:
         libvlc_video_cleanup_cb) {nullptr};
     int (*audioSetVolume)(libvlc_media_player_t*, int) {nullptr};
     int (*audioGetVolume)(libvlc_media_player_t*) {nullptr};
+    int (*videoGetSize)(libvlc_media_player_t*, unsigned, unsigned*, unsigned*) {nullptr};
 
 private:
     void* module_ {nullptr};
@@ -163,4 +164,9 @@ inline int libvlc_audio_set_volume(libvlc_media_player_t* player, int volume)
 inline int libvlc_audio_get_volume(libvlc_media_player_t* player)
 {
     return dk2vr::vlcApi().audioGetVolume(player);
+}
+inline int libvlc_video_get_size(libvlc_media_player_t* player, unsigned number,
+    unsigned* width, unsigned* height)
+{
+    return dk2vr::vlcApi().videoGetSize(player, number, width, height);
 }

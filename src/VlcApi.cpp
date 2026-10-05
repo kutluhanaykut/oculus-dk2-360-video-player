@@ -74,6 +74,7 @@ bool VlcApi::load(const std::filesystem::path& libraryDirectory, std::string& er
     DK2VR_LOAD_VLC(videoSetFormatCallbacks, "libvlc_video_set_format_callbacks");
     DK2VR_LOAD_VLC(audioSetVolume, "libvlc_audio_set_volume");
     DK2VR_LOAD_VLC(audioGetVolume, "libvlc_audio_get_volume");
+    DK2VR_LOAD_VLC(videoGetSize, "libvlc_video_get_size");
 #undef DK2VR_LOAD_VLC
 
     return true;
@@ -108,6 +109,7 @@ void VlcApi::unload()
     videoSetFormatCallbacks = nullptr;
     audioSetVolume = nullptr;
     audioGetVolume = nullptr;
+    videoGetSize = nullptr;
 }
 
 bool VlcApi::loaded() const noexcept

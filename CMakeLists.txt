@@ -220,6 +220,7 @@ set(DK2VR_SOURCES
     src/FileDialog.cpp
     src/Logger.cpp
     src/Projection.cpp
+    src/RangeProxy.cpp
     resources/app.rc
 )
 
@@ -246,6 +247,8 @@ target_link_libraries(DK2VRPlayer PRIVATE
     shell32
     winusb
     setupapi
+    winhttp
+    ws2_32
 )
 
 target_compile_definitions(DK2VRPlayer PRIVATE

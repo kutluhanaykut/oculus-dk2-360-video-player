@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <vector>
 
 namespace {
 
@@ -88,6 +89,42 @@ int main()
         "_eac tag must select cubemap");
     require(guessProjection("1800p_trip.mp4", 3840, 1920) == ProjectionMode::Mono360,
         "Numbers that only contain 180 must not count as a 180 tag");
+
+    // Kare yerlesimi: VR180 yan yana (koseler siyah) / diger / karanlik.
+    {
+        constexpr unsigned width = 400;
+        constexpr unsigned height = 200;
+        const auto makeFrame = [&](const auto& luma) {
+            std::vector<std::uint8_t> frame(static_cast<std::size_t>(width) * height * 4U);
+            for (unsigned y = 0; y < height; ++y) {
+                for (unsigned x = 0; x < width; ++x) {
+                    const std::uint8_t value = luma(x, y);
+                    std::uint8_t* pixel = &frame[(static_cast<std::size_t>(y) * width + x) * 4U];
+                    pixel[0] = pixel[1] = pixel[2] = value;
+                    pixel[3] = 255;
+                }
+            }
+            return frame;
+        };
+        // Each half holds a lit disc on black, like a masked VR180 eye.
+        const auto vr180 = makeFrame([](const unsigned x, const unsigned y) {
+            const float dx = static_cast<float>(x % (width / 2)) - 100.0F;
+            const float dy = static_cast<float>(y) - 100.0F;
+            return static_cast<std::uint8_t>(dx * dx + dy * dy < 95.0F * 95.0F ? 150 : 5);
+        });
+        const auto cubemap = makeFrame([](unsigned, unsigned) { return std::uint8_t {120}; });
+        const auto fadeIn = makeFrame([](unsigned, unsigned) { return std::uint8_t {2}; });
+        using dk2vr::FrameLayoutGuess;
+        require(dk2vr::classifyFrameLayout(vr180.data(), width, height, width * 4)
+                == FrameLayoutGuess::Vr180SideBySide,
+            "Masked side-by-side halves must be detected as VR180");
+        require(dk2vr::classifyFrameLayout(cubemap.data(), width, height, width * 4)
+                == FrameLayoutGuess::Other,
+            "A frame with content in the corners must not be VR180");
+        require(dk2vr::classifyFrameLayout(fadeIn.data(), width, height, width * 4)
+                == FrameLayoutGuess::Undecided,
+            "A black frame must stay undecided");
+    }
 
     // DK2 IMU paket cozucu.
     {

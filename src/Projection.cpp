@@ -98,6 +98,59 @@ std::string_view projectionName(const ProjectionMode mode) noexcept
     }
 }
 
+FrameLayoutGuess classifyFrameLayout(
+    const std::uint8_t* bgra, const unsigned width, const unsigned height, const unsigned pitch)
+{
+    if (bgra == nullptr || width < 64 || height < 64 || pitch < width * 4U) {
+        return FrameLayoutGuess::Undecided;
+    }
+    // Mean luma of a small square patch centred on (centerX, centerY).
+    const auto patchLuma = [&](const unsigned centerX, const unsigned centerY) {
+        const unsigned half = (std::max)(2U, (std::min)(width, height) / 100U);
+        const unsigned x0 = centerX > half ? centerX - half : 0U;
+        const unsigned y0 = centerY > half ? centerY - half : 0U;
+        const unsigned x1 = (std::min)(centerX + half, width - 1U);
+        const unsigned y1 = (std::min)(centerY + half, height - 1U);
+        double sum = 0.0;
+        unsigned count = 0;
+        for (unsigned y = y0; y <= y1; ++y) {
+            const std::uint8_t* row = bgra + static_cast<std::size_t>(y) * pitch;
+            for (unsigned x = x0; x <= x1; ++x) {
+                const std::uint8_t* pixel = row + static_cast<std::size_t>(x) * 4U;
+                sum += 0.114 * pixel[0] + 0.587 * pixel[1] + 0.299 * pixel[2];
+                ++count;
+            }
+        }
+        return count > 0 ? sum / count : 0.0;
+    };
+
+    constexpr double kBlack = 24.0;
+    constexpr double kLit = 35.0;
+    const unsigned inset = (std::max)(3U, (std::min)(width, height) / 50U);
+    const unsigned halfWidth = width / 2U;
+    int blackCorners = 0;
+    int litCentres = 0;
+    for (unsigned eye = 0; eye < 2; ++eye) {
+        const unsigned left = eye * halfWidth;
+        const unsigned right = left + halfWidth - 1U;
+        for (const unsigned x : {left + inset, right - inset}) {
+            for (const unsigned y : {inset, height - 1U - inset}) {
+                if (patchLuma(x, y) < kBlack) {
+                    ++blackCorners;
+                }
+            }
+        }
+        if (patchLuma(left + halfWidth / 2U, height / 2U) > kLit) {
+            ++litCentres;
+        }
+    }
+
+    if (litCentres < 2) {
+        return FrameLayoutGuess::Undecided; // too dark to judge
+    }
+    return blackCorners == 8 ? FrameLayoutGuess::Vr180SideBySide : FrameLayoutGuess::Other;
+}
+
 ProjectionMode guessProjection(
     const std::string_view fileName, const unsigned width, const unsigned height)
 {

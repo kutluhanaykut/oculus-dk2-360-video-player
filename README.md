@@ -102,6 +102,13 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Configuration Release
    - **180 derece modlarında** video yalnızca ön yarım küreye yansıtılır; başınızı 180°'den fazla çevirdiğinizde arka taraf siyah kalır (360° sarmalama yok).
 4. **DK2 ekranında VR tam ekran (F11)** düğmesi (veya `F11` kısayolu) seçili HDMI ekranını tam ekran yapar, fare imleci gizlenir ve OpenHMD üzerinden okunan yönelim ile stereo görüntü hesaplanır. **Esc** veya `F11` ile geri dönülür.
 
+### YouTube
+- **Kalite:** *Kaynak* sekmesindeki *Kalite* listesinden 480p–2160p seçilir (varsayılan 1080p). Seçilen yüksekliğe kadar en iyi VP9, yoksa H.264 akışı kullanılır; oynarken değiştirilirse video aynı yerden yeni kalitede devam eder. Kalite, ses ve önizleme modu `settings.json`'a kaydedilir.
+- **Projeksiyon:** YouTube'un VR akışları `mesh` etiketiyle gelir: 360 videolar EAC küp haritası, VR180 videolar yan yana iki yarım küredir. Uygulama başlıktan ve ilk karelerden (VR180'de köşeler siyahtır) doğru modu seçer.
+- **Akış:** YouTube sunucuları yalnızca ~10 MB'lık parçalı istekleri kabul eder; libVLC'nin açık uçlu isteği 403 alır. Uygulama bu yüzden akışları `127.0.0.1` üzerindeki küçük bir parçalı proxy'den oynatır.
+- **"HTTP 403" / video açılmıyor:** *Kaynak* sekmesindeki *Güncelle* düğmesiyle yt-dlp'yi güncelleyin (`yt-dlp -U`).
+- **Komut satırı:** `DK2VRPlayer.exe <youtube-adresi | video-dosyası>` verilen videoyu açılışta oynatır.
+
 ### Klavye kısayolları
 | Tuş | İşlev |
 |-----|-------|
@@ -116,6 +123,8 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Configuration Release
 | `5` | 180 derece (mono) |
 | `6` | 180 derece SBS 3D |
 | `D` | DK2 lens distorsiyon düzeltmesini aç/kapa |
+| `M` | Sessiz |
+| `H` | Arayüzü gizle / göster |
 
 ## DK2 bağlantı notları
 - DK2'de iki kablo vardır: HDMI (veya DVI adaptör) ve USB. USB jiroskop için gereklidir; **konum kamerası** gerekmez (yazılım bunu kullanmaz).

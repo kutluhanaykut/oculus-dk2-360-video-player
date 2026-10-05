@@ -1,5 +1,8 @@
 #pragma once
 
+#include "RangeProxy.hpp"
+
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -39,6 +42,7 @@ public:
         const std::string& videoUrl,
         const std::string& audioUrl,
         const std::map<std::string, std::string>& httpHeaders,
+        std::uint64_t httpChunkSize,
         std::string& error);
     void stop();
     void togglePause();
@@ -69,6 +73,7 @@ private:
 
     libvlc_instance_t* instance_ {nullptr};
     libvlc_media_player_t* player_ {nullptr};
+    RangeProxy rangeProxy_;
 
     mutable std::mutex frameMutex_;
     std::vector<std::uint8_t> framePixels_;
@@ -77,6 +82,10 @@ private:
     unsigned framePitch_ {0};
     std::uint64_t producedFrame_ {0};
     std::uint64_t consumedFrame_ {0};
+    // Decoders allocate frames padded to their block size (1920x1080 video
+    // arrives as 1920x1088). This is the real picture size, 0 until known.
+    std::atomic<unsigned> visibleWidth_ {0};
+    std::atomic<unsigned> visibleHeight_ {0};
 };
 
 } // namespace dk2vr

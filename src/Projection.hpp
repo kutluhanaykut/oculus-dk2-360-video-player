@@ -25,4 +25,13 @@ enum class ProjectionMode : std::int32_t {
 [[nodiscard]] ProjectionMode guessProjection(
     std::string_view fileName, unsigned width, unsigned height);
 
+enum class FrameLayoutGuess { Undecided, Vr180SideBySide, Other };
+
+// Looks at one decoded BGRA frame and tells VR180 side-by-side apart from
+// other layouts: VR180 halves are circular-masked, so all eight corners
+// (four per half) are black while the image centres are not. Returns
+// Undecided for frames too dark to judge, e.g. a fade-in from black.
+[[nodiscard]] FrameLayoutGuess classifyFrameLayout(
+    const std::uint8_t* bgra, unsigned width, unsigned height, unsigned pitch);
+
 } // namespace dk2vr

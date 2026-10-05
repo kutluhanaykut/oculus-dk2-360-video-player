@@ -2,6 +2,7 @@
 
 #include "DriverInstaller.hpp"
 #include "HmdManager.hpp"
+#include "Process.hpp"
 #include "Renderer.hpp"
 #include "VideoPlayer.hpp"
 #include "YouTubeHistory.hpp"
@@ -29,6 +30,8 @@ public:
     Application& operator=(const Application&) = delete;
 
     [[nodiscard]] bool initialize(std::string& error);
+    // Plays a YouTube URL or a local video file given on the command line.
+    void openFromCommandLine(const std::wstring& argument);
     int run();
 
 private:
@@ -37,10 +40,22 @@ private:
     void updateAsyncResolution();
     void renderFrame();
     void renderUserInterface();
-    void drawPlaybackControls();
+    void drawNowPlaying();
+    void drawSourceTab();
+    void drawYouTubeHistory();
     void drawSettings();
     void drawDevicePanel();
-    void drawYouTubeHistory();
+    void drawShortcutsTab();
+    void drawStatusLine();
+    void setVolume(int percent);
+    void toggleMute();
+    void changeYouTubeQuality(int maxHeight);
+    void startYtDlpVersionQuery();
+    void startYtDlpUpdate();
+    void pollBackgroundTasks();
+    void loadSettings();
+    void saveSettings() const;
+    [[nodiscard]] std::filesystem::path settingsPath() const;
     void startYouTubeResolution();
     void playResolvedMedia(const YouTubeMedia& media);
     void playLocalFile(const std::filesystem::path& path);
@@ -85,6 +100,27 @@ private:
     std::future<YouTubeMedia> resolutionFuture_;
     bool resolving_ {false};
     bool autoProjectionPending_ {false};
+    bool firstFrameLogged_ {false};
+
+    // Interface state.
+    bool uiVisible_ {true};
+    bool playingYouTube_ {false};
+    // Frames left in which to check whether a YouTube "mesh" stream is
+    // really VR180 side-by-side rather than an EAC cubemap.
+    int layoutCheckFramesLeft_ {0};
+    bool timelineDragging_ {false};
+    float timelineDragSeconds_ {0.0F};
+    bool muted_ {false};
+    int youtubeMaxHeight_ {kDefaultYouTubeMaxHeight};
+    // Position to restore once a re-opened stream shows its first frame
+    // (quality change); -1 when nothing is pending.
+    std::int64_t pendingResumeMs_ {-1};
+    std::array<char, 256> historyFilter_ {};
+
+    // yt-dlp version query and self-update, run off the UI thread.
+    std::string ytDlpVersion_;
+    std::future<ProcessResult> ytDlpVersionFuture_;
+    std::future<ProcessResult> ytDlpUpdateFuture_;
 
 
     float mouseYaw_ {0.0F};

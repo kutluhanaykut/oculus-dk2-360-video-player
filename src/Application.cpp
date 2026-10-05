@@ -3,14 +3,18 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "Application.hpp"
 
+#include "BrowserIntegration.hpp"
 #include "FileDialog.hpp"
 #include "Logger.hpp"
 #include "Process.hpp"
+#include "SpatialMetadata.hpp"
 
 #include <imgui.h>
 #include <nlohmann/json.hpp>
 #include <imgui_impl_opengl3.h>
 #include <imgui_impl_sdl2.h>
+
+#include <SDL_syswm.h>
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -57,6 +61,26 @@ bool directoryExists(const std::filesystem::path& path)
     return std::filesystem::is_directory(path, error);
 }
 
+// Arguments handed over by a second DK2VRPlayer.exe (see
+// forwardToRunningInstance). WM_COPYDATA is a sent message, which SDL's
+// message hook never sees, so the player window is subclassed for it.
+WNDPROC g_previousWindowProc = nullptr;
+std::vector<std::wstring> g_forwardedArguments;
+
+LRESULT CALLBACK forwardingWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_COPYDATA) {
+        const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lParam);
+        if (data != nullptr && data->dwData == kForwardedArgumentTag && data->lpData != nullptr
+            && data->cbData >= sizeof(wchar_t) && data->cbData < 64 * 1024) {
+            const auto* text = static_cast<const wchar_t*>(data->lpData);
+            g_forwardedArguments.emplace_back(text, wcsnlen(text, data->cbData / sizeof(wchar_t)));
+            return TRUE;
+        }
+    }
+    return CallWindowProcW(g_previousWindowProc, window, message, wParam, lParam);
+}
+
 std::string lowerAscii(std::string value)
 {
     std::transform(value.begin(), value.end(), value.begin(),
@@ -64,9 +88,12 @@ std::string lowerAscii(std::string value)
     return value;
 }
 
-// About ten seconds of video in which to spot a VR180 frame (fade-ins from
-// black stay undecided until the picture appears).
-constexpr int kLayoutCheckFrames = 600;
+// Picture-based projection detection: look at up to ~20 s of video (dark
+// fade-ins stay undecided), classify every 10th frame and decide once three
+// frames gave a clear answer.
+constexpr int kLayoutCheckFrames = 1200;
+constexpr int kLayoutCheckStride = 10;
+constexpr std::size_t kLayoutVotes = 3;
 
 // YouTube quality choices: the maximum video height handed to yt-dlp.
 constexpr int kQualityHeights[] {480, 720, 1080, 1440, 2160};
@@ -121,6 +148,17 @@ bool Application::initialize(std::string& error)
     if (window_ == nullptr) {
         error = std::string("Pencere olusturulamadi: ") + SDL_GetError();
         return false;
+    }
+
+    installArgumentReceiver();
+    protocolRegistered_ = isProtocolRegistered(executableDirectory() / L"DK2VRPlayer.exe");
+    browsers_ = findInstalledBrowsers();
+    for (const InstalledBrowser& browser : browsers_) {
+        log::info("Tarayici bulundu: " + browser.name + " (" + wideToUtf8(browser.executable.wstring()) + ")");
+    }
+    if (std::none_of(browsers_.begin(), browsers_.end(),
+            [this](const InstalledBrowser& browser) { return browser.name == bookmarkBrowser_; })) {
+        bookmarkBrowser_ = browsers_.empty() ? std::string {} : browsers_.front().name;
     }
 
     glContext_ = SDL_GL_CreateContext(window_);
@@ -237,21 +275,14 @@ int Application::run()
         while (SDL_PollEvent(&event) != 0) {
             handleEvent(event);
         }
+        processForwardedArguments();
         updateAsyncResolution();
         pollBackgroundTasks();
         hmd_.update();
         video_.consumeLatestFrame([this](const std::uint8_t* pixels, const unsigned width,
                                       const unsigned height, const unsigned pitch) {
             if (layoutCheckFramesLeft_ > 0) {
-                --layoutCheckFramesLeft_;
-                const FrameLayoutGuess guess = classifyFrameLayout(pixels, width, height, pitch);
-                if (guess == FrameLayoutGuess::Vr180SideBySide) {
-                    renderSettings_.projection = ProjectionMode::Fisheye180Sbs;
-                    setStatus("Goruntu VR180 yan yana olarak algilandi; 180 derece SBS 3D secildi.");
-                }
-                if (guess != FrameLayoutGuess::Undecided) {
-                    layoutCheckFramesLeft_ = 0;
-                }
+                handleLayoutCheckFrame(pixels, width, height, pitch);
             }
             renderer_.uploadVideoFrame(pixels, width, height, pitch);
         });
@@ -415,6 +446,11 @@ void Application::updateAsyncResolution()
     const YouTubeMedia media = resolutionFuture_.get();
     if (!media.success) {
         pendingResumeMs_ = -1;
+        if (!fallbackVideoUrl_.empty()) {
+            log::warning("yt-dlp sayfayi cozemedi, sayfadaki video adresi oynatiliyor: " + media.error);
+            playDirectWebVideo(fallbackVideoUrl_, currentYouTubeUrl_);
+            return;
+        }
         setError(media.error);
         return;
     }
@@ -435,12 +471,25 @@ void Application::renderFrame()
     // etiketlerine (_TB, _SBS, _180 ...) ve en-boy oranina gore otomatik sec.
     if (autoProjectionPending_ && renderer_.hasVideoFrame()) {
         autoProjectionPending_ = false;
-        renderSettings_.projection = guessProjection(
-            wideToUtf8(selectedFile_.filename().wstring()),
-            renderer_.videoWidth(), renderer_.videoHeight());
-        setStatus("Projeksiyon otomatik secildi: "
+        const unsigned videoWidth = renderer_.videoWidth();
+        const unsigned videoHeight = renderer_.videoHeight();
+        const std::string fileName = wideToUtf8(selectedFile_.filename().wstring());
+        std::string source;
+        if (const auto fromMetadata = projectionFromMetadata(localMetadata_, videoWidth, videoHeight)) {
+            renderSettings_.projection = *fromMetadata;
+            source = "dosya bilgisinden";
+        } else if (const auto fromName = projectionFromFileNameTags(fileName, videoWidth, videoHeight)) {
+            renderSettings_.projection = *fromName;
+            source = "dosya adindan";
+        } else {
+            // Start from the aspect-ratio guess and let the picture confirm it.
+            renderSettings_.projection = guessProjection(fileName, videoWidth, videoHeight);
+            startLayoutCheck(false);
+            source = "en-boy oranindan, goruntu inceleniyor";
+        }
+        setStatus("Projeksiyon (" + source + "): "
             + std::string(projectionName(renderSettings_.projection))
-            + " (yanlissa 1-6 tuslari ile degistirin).");
+            + " - yanlissa 1-6 tuslari ile degistirin.");
     }
 
     if (!firstFrameLogged_ && renderer_.hasVideoFrame()) {
@@ -621,14 +670,14 @@ void Application::drawSourceTab()
     ImGui::TextDisabled("veya dosyayi pencereye surukleyin");
 
     ImGui::Spacing();
-    ImGui::SeparatorText("YouTube");
+    ImGui::SeparatorText("Web / YouTube");
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const float pasteWidth = ImGui::CalcTextSize("Yapistir").x + style.FramePadding.x * 2.0F;
     const float playWidth = 96.0F;
     ImGui::SetNextItemWidth(-(pasteWidth + playWidth + style.ItemSpacing.x * 2.0F));
     const bool enterPressed = ImGui::InputTextWithHint("##youtube",
-        "https://www.youtube.com/watch?v=...  (Enter ile oynat)", youtubeUrl_.data(),
+        "Video sayfasi adresi: YouTube, Vimeo, ...  (Enter ile oynat)", youtubeUrl_.data(),
         youtubeUrl_.size(), ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
     if (ImGui::Button("Yapistir")) {
@@ -681,7 +730,138 @@ void Application::drawSourceTab()
     }
 
     ImGui::Spacing();
+    drawBrowserIntegration();
+    ImGui::Spacing();
     drawYouTubeHistory();
+}
+
+void Application::drawBrowserIntegration()
+{
+    ImGui::SeparatorText("Tarayicidan gonder");
+    const std::filesystem::path executable = executableDirectory() / L"DK2VRPlayer.exe";
+    if (protocolRegistered_) {
+        ImGui::TextDisabled("dk2vr:// baglantisi kayitli.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Kaydi kaldir")) {
+            std::string registryError;
+            if (unregisterProtocol(registryError)) {
+                setStatus("dk2vr:// baglantisi kaldirildi.");
+            } else {
+                setError(registryError);
+            }
+            protocolRegistered_ = isProtocolRegistered(executable);
+        }
+    } else {
+        if (ImGui::Button("dk2vr:// baglantisini kaydet")) {
+            std::string registryError;
+            if (registerProtocol(executable, registryError)) {
+                setStatus("dk2vr:// baglantisi kaydedildi. Simdi 'Yer imini ekle' ile yer imini kurun.");
+            } else {
+                setError(registryError);
+            }
+            protocolRegistered_ = isProtocolRegistered(executable);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Tarayicinin 'DK2'de ac' yer imiyle bu oynaticiyi acabilmesi icin.\n"
+                              "Yalnizca bu kullanici hesabina yazilir (HKCU\\Software\\Classes\\dk2vr);\n"
+                              "SteamVR'i ve diger programlari etkilemez, buradan kaldirilabilir.");
+        }
+    }
+    // The bookmark must land in the browser used for watching, which is
+    // often not the Windows default.
+    std::filesystem::path browserExecutable;
+    if (!browsers_.empty()) {
+        ImGui::SetNextItemWidth(110.0F);
+        if (ImGui::BeginCombo("##bookmarkBrowser", bookmarkBrowser_.c_str())) {
+            for (const InstalledBrowser& browser : browsers_) {
+                if (ImGui::Selectable(browser.name.c_str(), browser.name == bookmarkBrowser_)) {
+                    bookmarkBrowser_ = browser.name;
+                    saveSettings();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        for (const InstalledBrowser& browser : browsers_) {
+            if (browser.name == bookmarkBrowser_) {
+                browserExecutable = browser.executable;
+            }
+        }
+        ImGui::SameLine();
+    }
+    if (ImGui::Button(browsers_.empty() ? "Yer imini ekle..." : ("Yer imini " + bookmarkBrowser_ + "'e ekle...").c_str())) {
+        std::string pageError;
+        if (openBookmarkletPage(executableDirectory() / L"dk2vr-yer-imi.html", browserExecutable, pageError)) {
+            setStatus("Tarayicida acilan sayfadaki 'DK2'de ac' dugmesini yer imi cubuguna surukleyin.");
+        } else {
+            setError(pageError);
+        }
+    }
+    ImGui::TextDisabled("Video sayfasindayken 'DK2'de ac' yer imine basin; sayfa burada acilir.");
+}
+
+void Application::playDirectWebVideo(const std::string& videoUrl, const std::string& pageUrl)
+{
+    // Sites check where a request comes from; send the page as Referer and
+    // look like a browser.
+    const std::map<std::string, std::string> headers {
+        {"Referer", pageUrl},
+        {"User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"},
+    };
+    std::string playbackError;
+    if (!video_.playNetwork(videoUrl, {}, headers, 0, playbackError)) {
+        setError(playbackError);
+        return;
+    }
+    // Title: the file name of the stream, or the page when it has none.
+    std::string title = videoUrl.substr(0, videoUrl.find('?'));
+    title = title.substr(title.find_last_of('/') + 1);
+    if (title.empty()) {
+        title = pageUrl;
+    }
+    currentTitle_ = title;
+    playingYouTube_ = false;
+    layoutCheckFramesLeft_ = 0;
+    localMetadata_ = {};
+    renderer_.resetVideoFrame();
+    firstFrameLogged_ = false;
+    autoProjectionPending_ = false;
+    youtubeHistory_.add(title, pageUrl);
+    renderSettings_.projection = guessProjection(title, 0, 0);
+    startLayoutCheck(false);
+    setStatus("Sayfadaki video oynatiliyor (projeksiyon goruntuden algilanacak): " + title);
+}
+
+void Application::installArgumentReceiver()
+{
+    SDL_SysWMinfo info {};
+    SDL_VERSION(&info.version);
+    if (window_ == nullptr || SDL_GetWindowWMInfo(window_, &info) != SDL_TRUE
+        || info.subsystem != SDL_SYSWM_WINDOWS) {
+        log::warning("Pencere tutamaci alinamadi; ikinci baslatmalardan adres alinamayacak.");
+        return;
+    }
+    const HWND hwnd = info.info.win.window;
+    g_previousWindowProc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&forwardingWindowProc)));
+}
+
+void Application::processForwardedArguments()
+{
+    if (g_forwardedArguments.empty()) {
+        return;
+    }
+    std::vector<std::wstring> arguments;
+    arguments.swap(g_forwardedArguments);
+    // Bring the player forward: the link was clicked in the browser.
+    if (window_ != nullptr) {
+        SDL_RestoreWindow(window_);
+        SDL_RaiseWindow(window_);
+    }
+    for (const std::wstring& argument : arguments) {
+        log::info("Ikinci baslatmadan arguman alindi.");
+        openFromCommandLine(argument);
+    }
 }
 
 void Application::drawYouTubeHistory()
@@ -757,7 +937,7 @@ void Application::drawYouTubeHistory()
         youtubeHistory_.remove(removeUrl);
     }
     if (!playUrl.empty()) {
-        playYouTubeUrl(playUrl);
+        playWebUrl(playUrl);
     }
 }
 
@@ -961,7 +1141,7 @@ void Application::changeYouTubeQuality(const int maxHeight)
     pendingResumeMs_ = state == PlaybackState::Playing || state == PlaybackState::Paused
         ? video_.time()
         : -1;
-    playYouTubeUrl(currentYouTubeUrl_);
+    playWebUrl(currentYouTubeUrl_, fallbackVideoUrl_);
 }
 
 void Application::startYtDlpVersionQuery()
@@ -1020,6 +1200,70 @@ void Application::pollBackgroundTasks()
     }
 }
 
+void Application::startLayoutCheck(const bool youtubeMesh)
+{
+    layoutCheckFramesLeft_ = kLayoutCheckFrames;
+    layoutCheckCounter_ = 0;
+    layoutCheckYouTubeMesh_ = youtubeMesh;
+    layoutVotes_.clear();
+}
+
+void Application::handleLayoutCheckFrame(const std::uint8_t* pixels, const unsigned width,
+    const unsigned height, const unsigned pitch)
+{
+    --layoutCheckFramesLeft_;
+    if (++layoutCheckCounter_ % kLayoutCheckStride == 0) {
+        FrameLayoutGuess guess = classifyFrameLayout(pixels, width, height, pitch);
+        // A file that declares itself mono cannot be stereo.
+        if (localMetadata_.stereo == StereoLayout::Mono
+            && (guess == FrameLayoutGuess::TopBottom || guess == FrameLayoutGuess::SideBySide360)) {
+            guess = FrameLayoutGuess::Monoscopic;
+        }
+        if (guess != FrameLayoutGuess::Undecided) {
+            layoutVotes_.push_back(guess);
+        }
+    }
+    if (layoutVotes_.size() < kLayoutVotes && (layoutCheckFramesLeft_ > 0 || layoutVotes_.empty())) {
+        return;
+    }
+    layoutCheckFramesLeft_ = 0;
+    if (layoutVotes_.empty()) {
+        log::info("Goruntu incelemesi: karar verilecek kadar net kare yok.");
+        return;
+    }
+
+    // Majority vote; on a tie the earliest answer wins.
+    FrameLayoutGuess winner = layoutVotes_.front();
+    std::size_t best = 0;
+    for (const FrameLayoutGuess candidate : layoutVotes_) {
+        const auto votes = static_cast<std::size_t>(
+            std::count(layoutVotes_.begin(), layoutVotes_.end(), candidate));
+        if (votes > best) {
+            best = votes;
+            winner = candidate;
+        }
+    }
+    std::string votes;
+    for (const FrameLayoutGuess vote : layoutVotes_) {
+        votes += std::to_string(static_cast<int>(vote)) + " ";
+    }
+    log::info("Goruntu incelemesi oylari (1 mono, 2 ust/alt, 3 yan yana 360, 4 VR180, 5 EAC): " + votes);
+    layoutVotes_.clear();
+
+    // A YouTube mesh stream is either the EAC cubemap already selected or
+    // VR180; other answers are noise.
+    if (layoutCheckYouTubeMesh_ && winner != FrameLayoutGuess::SideBySide180) {
+        return;
+    }
+    const auto detected = projectionFromFrameLayout(winner);
+    if (!detected || *detected == renderSettings_.projection) {
+        return;
+    }
+    renderSettings_.projection = *detected;
+    setStatus("Projeksiyon goruntuden algilandi: " + std::string(projectionName(*detected))
+        + " - yanlissa 1-6 tuslari ile degistirin.");
+}
+
 std::filesystem::path Application::settingsPath() const
 {
     return executableDirectory() / L"settings.json";
@@ -1042,6 +1286,7 @@ void Application::loadSettings()
             youtubeMaxHeight_ = height;
         }
         volume_ = std::clamp(root.value("volume", volume_), 0, 100);
+        bookmarkBrowser_ = root.value("bookmarkBrowser", std::string {});
         const int previewMode = root.value("previewMode", static_cast<int>(renderSettings_.previewMode));
         if (previewMode >= 0 && previewMode <= 2) {
             renderSettings_.previewMode = static_cast<PreviewMode>(previewMode);
@@ -1058,6 +1303,7 @@ void Application::saveSettings() const
             {"youtubeMaxHeight", youtubeMaxHeight_},
             {"volume", volume_},
             {"previewMode", static_cast<int>(renderSettings_.previewMode)},
+            {"bookmarkBrowser", bookmarkBrowser_},
         };
         std::ofstream stream(settingsPath(), std::ios::binary | std::ios::trunc);
         if (stream) {
@@ -1070,7 +1316,7 @@ void Application::saveSettings() const
 
 void Application::startYouTubeResolution()
 {
-    playYouTubeUrl(std::string(youtubeUrl_.data()));
+    playWebUrl(std::string(youtubeUrl_.data()));
 }
 
 void Application::playResolvedMedia(const YouTubeMedia& media)
@@ -1084,26 +1330,28 @@ void Application::playResolvedMedia(const YouTubeMedia& media)
     currentTitle_ = media.title;
     playingYouTube_ = true;
     layoutCheckFramesLeft_ = 0;
+    localMetadata_ = {};
     renderer_.resetVideoFrame();
     firstFrameLogged_ = false;
     youtubeHistory_.add(media.title, currentYouTubeUrl_);
 
-    // yt-dlp "projection" alanina gore projeksiyon modunu otomatik sec.
+    const std::string source = isLikelyYouTubeUrl(currentYouTubeUrl_) ? "YouTube" : "Web";
 
+    // yt-dlp "projection" alanina gore projeksiyon modunu otomatik sec.
     // "equirectangular" -> 360 derece, "cubemap" -> EAC cubemap,
     // "flat" -> 2D video.
     switch (media.projectionType) {
     case VideoProjection::CubemapEac:
         renderSettings_.projection = ProjectionMode::CubemapEac;
-        setStatus("YouTube Cubemap (EAC) 360 video oynatiliyor: " + media.title);
+        setStatus(source + " Cubemap (EAC) 360 video oynatiliyor: " + media.title);
         break;
     case VideoProjection::Equirectangular:
         renderSettings_.projection = ProjectionMode::Mono360;
-        setStatus("YouTube 360 video oynatiliyor: " + media.title);
+        setStatus(source + " 360 video oynatiliyor: " + media.title);
         break;
     case VideoProjection::Flat:
         renderSettings_.projection = ProjectionMode::Mono360;
-        setStatus("YouTube 2D video oynatiliyor: " + media.title);
+        setStatus(source + " 2D video oynatiliyor: " + media.title);
         break;
     case VideoProjection::Mesh: {
         // YouTube's VR clients send 360 videos as an EAC cubemap and VR180 as
@@ -1114,9 +1362,9 @@ void Application::playResolvedMedia(const YouTubeMedia& media)
             renderSettings_.projection = fromTitle;
         } else {
             renderSettings_.projection = ProjectionMode::CubemapEac;
-            layoutCheckFramesLeft_ = kLayoutCheckFrames;
+            startLayoutCheck(true);
         }
-        setStatus("YouTube video oynatiliyor (" + std::string(projectionName(renderSettings_.projection))
+        setStatus(source + " video oynatiliyor (" + std::string(projectionName(renderSettings_.projection))
             + ", yanlissa 1-6): " + media.title);
         break;
     }
@@ -1129,9 +1377,9 @@ void Application::playResolvedMedia(const YouTubeMedia& media)
             media.title, media.videoWidth, media.videoHeight);
         if (renderSettings_.projection != ProjectionMode::Fisheye180
             && renderSettings_.projection != ProjectionMode::Fisheye180Sbs) {
-            layoutCheckFramesLeft_ = kLayoutCheckFrames;
+            startLayoutCheck(false);
         }
-        setStatus("YouTube video oynatiliyor (" + std::string(projectionName(renderSettings_.projection))
+        setStatus(source + " video oynatiliyor (" + std::string(projectionName(renderSettings_.projection))
             + ", yanlissa 1-6): " + media.title);
         break;
     }
@@ -1140,11 +1388,20 @@ void Application::playResolvedMedia(const YouTubeMedia& media)
 void Application::openFromCommandLine(const std::wstring& argument)
 {
     const std::string utf8 = wideToUtf8(argument);
-    if (isLikelyYouTubeUrl(utf8)) {
-        playYouTubeUrl(utf8);
-    } else {
-        playLocalFile(std::filesystem::path(argument));
+    if (utf8.empty()) {
+        return;
     }
+    if (const auto request = parseLaunchUrl(utf8)) {
+        log::info("Disaridan web adresi alindi: " + request->pageUrl
+            + (request->videoUrl.empty() ? "" : " (sayfadaki video adresiyle)"));
+        playWebUrl(request->pageUrl, request->videoUrl);
+        return;
+    }
+    if (isDk2vrLink(utf8)) {
+        setError("Gecersiz dk2vr: baglantisi; yalnizca http(s) adresleri acilir.");
+        return;
+    }
+    playLocalFile(std::filesystem::path(argument));
 }
 
 void Application::playLocalFile(const std::filesystem::path& path)
@@ -1158,6 +1415,8 @@ void Application::playLocalFile(const std::filesystem::path& path)
     selectedFile_ = path;
     playingYouTube_ = false;
     layoutCheckFramesLeft_ = 0;
+    localMetadata_ = readSpatialMetadata(path);
+    log::info("Dosya 360 bilgisi: " + describe(localMetadata_));
     pendingResumeMs_ = -1;
     currentTitle_ = wideToUtf8(path.filename().wstring());
     renderer_.resetVideoFrame();
@@ -1167,15 +1426,16 @@ void Application::playLocalFile(const std::filesystem::path& path)
     setStatus("Yerel 360 video oynatiliyor: " + currentTitle_);
 }
 
-void Application::playYouTubeUrl(const std::string& url)
+void Application::playWebUrl(const std::string& url, const std::string& fallbackVideoUrl)
 {
     if (resolving_) {
         return;
     }
-    if (!isLikelyYouTubeUrl(url)) {
-        setError("Gecerli bir YouTube video URL'si girin.");
+    if (!isWebUrl(url)) {
+        setError("Gecerli bir web video adresi girin (http:// veya https://).");
         return;
     }
+    fallbackVideoUrl_ = isWebUrl(fallbackVideoUrl) ? fallbackVideoUrl : std::string {};
     if (!resolver_.available()) {
         setError("yt-dlp.exe bulunamadi. scripts/bootstrap.ps1 calistirin.");
         return;
@@ -1184,7 +1444,8 @@ void Application::playYouTubeUrl(const std::string& url)
     std::memset(youtubeUrl_.data(), 0, youtubeUrl_.size());
     std::strncpy(youtubeUrl_.data(), url.c_str(), youtubeUrl_.size() - 1);
     error_.clear();
-    status_ = "YouTube video ve ses akis adresleri cozuluyor (en fazla "
+    status_ = std::string(isLikelyYouTubeUrl(url) ? "YouTube" : "Web")
+        + " video ve ses akis adresleri cozuluyor (en fazla "
         + std::to_string(youtubeMaxHeight_) + "p)...";
     currentYouTubeUrl_ = url;
     resolving_ = true;

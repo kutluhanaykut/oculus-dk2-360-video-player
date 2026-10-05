@@ -1,6 +1,8 @@
+#include "BrowserIntegration.hpp"
 #include "ImuPacket.hpp"
 #include "OrientationFilter.hpp"
 #include "Projection.hpp"
+#include "SpatialMetadata.hpp"
 
 #include <cstdint>
 
@@ -90,40 +92,155 @@ int main()
     require(guessProjection("1800p_trip.mp4", 3840, 1920) == ProjectionMode::Mono360,
         "Numbers that only contain 180 must not count as a 180 tag");
 
-    // Kare yerlesimi: VR180 yan yana (koseler siyah) / diger / karanlik.
+    // Kare yerlesimi: VR180, ust/alt, yan yana, EAC, mono, karanlik.
     {
-        constexpr unsigned width = 400;
-        constexpr unsigned height = 200;
-        const auto makeFrame = [&](const auto& luma) {
+        using dk2vr::FrameLayoutGuess;
+        // Smooth, non-repeating value noise, so the halves of a mono frame
+        // differ the way real footage does.
+        const auto noise = [](const unsigned seed, const int x, const int y) {
+            const auto lattice = [seed](const int cellX, const int cellY) {
+                std::uint32_t hash = static_cast<std::uint32_t>(cellX) * 73856093U
+                    ^ static_cast<std::uint32_t>(cellY) * 19349663U ^ seed * 83492791U;
+                hash ^= hash >> 13;
+                hash *= 0x5bd1e995U;
+                hash ^= hash >> 15;
+                return static_cast<float>(hash % 176U) + 40.0F;
+            };
+            const int cellX = static_cast<int>(std::floor(x / 16.0F));
+            const int cellY = static_cast<int>(std::floor(y / 16.0F));
+            const float fx = (x - cellX * 16) / 16.0F;
+            const float fy = (y - cellY * 16) / 16.0F;
+            const float top = lattice(cellX, cellY) * (1 - fx) + lattice(cellX + 1, cellY) * fx;
+            const float bottom = lattice(cellX, cellY + 1) * (1 - fx) + lattice(cellX + 1, cellY + 1) * fx;
+            return static_cast<std::uint8_t>(top * (1 - fy) + bottom * fy);
+        };
+        const auto classify = [](const unsigned width, const unsigned height, const auto& luma) {
             std::vector<std::uint8_t> frame(static_cast<std::size_t>(width) * height * 4U);
             for (unsigned y = 0; y < height; ++y) {
                 for (unsigned x = 0; x < width; ++x) {
-                    const std::uint8_t value = luma(x, y);
                     std::uint8_t* pixel = &frame[(static_cast<std::size_t>(y) * width + x) * 4U];
-                    pixel[0] = pixel[1] = pixel[2] = value;
+                    pixel[0] = pixel[1] = pixel[2] = luma(static_cast<int>(x), static_cast<int>(y));
                     pixel[3] = 255;
                 }
             }
-            return frame;
+            return dk2vr::classifyFrameLayout(frame.data(), width, height, width * 4U);
         };
+
+        require(classify(512, 256, [&](int x, int y) { return noise(1, x, y); })
+                == FrameLayoutGuess::Monoscopic,
+            "A continuous 2:1 picture must be mono");
+        // Second eye = first eye with a little parallax.
+        require(classify(256, 256, [&](int x, int y) {
+            return y < 128 ? noise(1, x, y) : noise(1, x + 2, y - 128);
+        }) == FrameLayoutGuess::TopBottom,
+            "Nearly identical top and bottom halves must be top/bottom 3D");
+        require(classify(1024, 256, [&](int x, int y) {
+            return x < 512 ? noise(1, x, y) : noise(1, x - 512 + 2, y);
+        }) == FrameLayoutGuess::SideBySide360,
+            "Two 2:1 eyes side by side must be 360 side-by-side 3D");
+        require(classify(512, 256, [&](int x, int y) {
+            return x < 256 ? noise(1, x, y) : noise(1, x - 256 + 2, y);
+        }) == FrameLayoutGuess::SideBySide180,
+            "Two square eyes side by side must be VR180");
+        require(classify(384, 256, [&](int x, int y) {
+            return y < 128 ? noise(1, x, y) : noise(7, x, y);
+        }) == FrameLayoutGuess::Cubemap,
+            "Unrelated rows meeting at a hard middle seam must be an EAC grid");
         // Each half holds a lit disc on black, like a masked VR180 eye.
-        const auto vr180 = makeFrame([](const unsigned x, const unsigned y) {
-            const float dx = static_cast<float>(x % (width / 2)) - 100.0F;
+        require(classify(400, 200, [](int x, int y) {
+            const float dx = static_cast<float>(x % 200) - 100.0F;
             const float dy = static_cast<float>(y) - 100.0F;
             return static_cast<std::uint8_t>(dx * dx + dy * dy < 95.0F * 95.0F ? 150 : 5);
-        });
-        const auto cubemap = makeFrame([](unsigned, unsigned) { return std::uint8_t {120}; });
-        const auto fadeIn = makeFrame([](unsigned, unsigned) { return std::uint8_t {2}; });
-        using dk2vr::FrameLayoutGuess;
-        require(dk2vr::classifyFrameLayout(vr180.data(), width, height, width * 4)
-                == FrameLayoutGuess::Vr180SideBySide,
+        }) == FrameLayoutGuess::SideBySide180,
             "Masked side-by-side halves must be detected as VR180");
-        require(dk2vr::classifyFrameLayout(cubemap.data(), width, height, width * 4)
-                == FrameLayoutGuess::Other,
-            "A frame with content in the corners must not be VR180");
-        require(dk2vr::classifyFrameLayout(fadeIn.data(), width, height, width * 4)
+        require(classify(400, 200, [](int, int) { return std::uint8_t {2}; })
                 == FrameLayoutGuess::Undecided,
             "A black frame must stay undecided");
+        require(classify(400, 200, [](int, int) { return std::uint8_t {120}; })
+                == FrameLayoutGuess::Undecided,
+            "A flat frame must stay undecided");
+    }
+
+    // Dosya ici 360 bilgisi: MP4 sv3d/st3d, Matroska StereoMode/ProjectionType.
+    {
+        using dk2vr::SphericalProjection;
+        using dk2vr::StereoLayout;
+        // st3d (top-bottom) + sv3d/proj/equi with 0.25 cropped on each side.
+        const std::uint8_t moov180[] {
+            0, 0, 0, 13, 's', 't', '3', 'd', 0, 0, 0, 0, 1,
+            0, 0, 0, 44, 's', 'v', '3', 'd',
+            0, 0, 0, 36, 'p', 'r', 'o', 'j',
+            0, 0, 0, 28, 'e', 'q', 'u', 'i', 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0x40, 0, 0, 0};
+        const auto vr180 = dk2vr::parseMp4Moov(moov180, sizeof(moov180));
+        require(vr180.projection == SphericalProjection::Equirectangular180
+                && vr180.stereo == StereoLayout::TopBottom,
+            "MP4 equi bounds and st3d must be read");
+        const std::uint8_t moovCubemap[] {
+            0, 0, 0, 36, 's', 'v', '3', 'd',
+            0, 0, 0, 28, 'p', 'r', 'o', 'j',
+            0, 0, 0, 20, 'c', 'b', 'm', 'p', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        require(dk2vr::parseMp4Moov(moovCubemap, sizeof(moovCubemap)).projection
+                == SphericalProjection::Cubemap,
+            "MP4 cbmp must be read as a cubemap");
+
+        // StereoMode=1 and ProjectionType=1 before the first Cluster; a
+        // look-alike inside the Cluster must be ignored.
+        const std::uint8_t matroska[] {
+            0x1A, 0x45, 0xDF, 0xA3, 0x84, 0x42, 0x86, 0x81, 0x01,
+            0x53, 0xB8, 0x81, 0x01,
+            0x76, 0x71, 0x81, 0x01,
+            0x1F, 0x43, 0xB6, 0x75, 0x53, 0xB8, 0x81, 0x03};
+        const auto mkv = dk2vr::parseMatroskaHeader(matroska, sizeof(matroska));
+        require(mkv.stereo == StereoLayout::LeftRight
+                && mkv.projection == SphericalProjection::Equirectangular,
+            "Matroska StereoMode/ProjectionType must be read from the header only");
+
+        const auto fromMetadata = [](SphericalProjection projection, StereoLayout stereo,
+                                      unsigned width, unsigned height) {
+            return dk2vr::projectionFromMetadata(dk2vr::SpatialMetadata {projection, stereo}, width, height);
+        };
+        require(fromMetadata(SphericalProjection::Unknown, StereoLayout::LeftRight, 1920, 1080)
+                == ProjectionMode::Fisheye180Sbs,
+            "Side-by-side with square eyes (YouTube VR180 WebM) must be VR180");
+        require(fromMetadata(SphericalProjection::Equirectangular, StereoLayout::TopBottom, 4096, 4096)
+                == ProjectionMode::StereoTopBottom,
+            "Equirect top/bottom must be 3D 360 top/bottom");
+        require(fromMetadata(SphericalProjection::Mesh, StereoLayout::Mono, 1920, 1080)
+                == ProjectionMode::CubemapEac,
+            "Mono mesh (YouTube 360) must be EAC");
+        require(!fromMetadata(SphericalProjection::Unknown, StereoLayout::Mono, 1920, 1080).has_value(),
+            "Mono without a projection must be left to the picture check");
+    }
+
+    // Tarayicidan gelen dk2vr: baglantilari.
+    {
+        const auto page = dk2vr::parseLaunchUrl(
+            "dk2vr://open?url=https%3A%2F%2Fvimeo.com%2F123%3Fa%3D1%26b%3D2"
+            "&video=https%3A%2F%2Fcdn.example.com%2Fclip%2520one.mp4");
+        require(page && page->pageUrl == "https://vimeo.com/123?a=1&b=2"
+                && page->videoUrl == "https://cdn.example.com/clip%20one.mp4",
+            "dk2vr://open must decode the page and the video URL");
+        const auto slashed = dk2vr::parseLaunchUrl("dk2vr://open/?url=https%3A%2F%2Fx.com%2Fv");
+        require(slashed && slashed->pageUrl == "https://x.com/v",
+            "A browser-added slash before '?' must be accepted");
+        const auto blob = dk2vr::parseLaunchUrl(
+            "dk2vr://open?url=https%3A%2F%2Fx.com%2Fv&video=blob%3Ahttps%3A%2F%2Fx.com%2Fabc");
+        require(blob && blob->videoUrl.empty(), "blob: video sources must be dropped");
+        require(dk2vr::parseLaunchUrl("dk2vr:https://x.com/a+b")->pageUrl == "https://x.com/a+b",
+            "dk2vr:<url> must keep the URL, including '+'");
+        require(dk2vr::parseLaunchUrl("https://www.youtube.com/watch?v=abc").has_value(),
+            "A bare http(s) URL must be accepted");
+        // A web page controls these links: nothing but http(s) may reach yt-dlp.
+        require(!dk2vr::parseLaunchUrl("dk2vr://open?url=--exec%20calc").has_value(),
+            "An option-looking 'URL' must be rejected");
+        require(!dk2vr::parseLaunchUrl("dk2vr://open?url=file%3A%2F%2F%2FC%3A%2Fx.mp4").has_value(),
+            "file: URLs must be rejected");
+        require(!dk2vr::parseLaunchUrl("dk2vr://open?url=https%3A%2F%2Fx.com%2F%20--exec").has_value(),
+            "URLs with spaces must be rejected");
+        require(!dk2vr::parseLaunchUrl(R"(C:\Videos\clip.mp4)").has_value(),
+            "Local paths are not launch URLs");
+        require(dk2vr::bookmarkletUrl().rfind("javascript:", 0) == 0, "Bookmarklet must be a javascript: URL");
     }
 
     // DK2 IMU paket cozucu.

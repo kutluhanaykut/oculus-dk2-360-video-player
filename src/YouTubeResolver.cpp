@@ -1,5 +1,6 @@
 #include "YouTubeResolver.hpp"
 
+#include "BrowserIntegration.hpp"
 #include "Logger.hpp"
 #include "Process.hpp"
 
@@ -101,8 +102,8 @@ YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl, const int maxH
         media.error = "yt-dlp.exe bulunamadi: " + executable_.string();
         return media;
     }
-    if (!isLikelyYouTubeUrl(pageUrl)) {
-        media.error = "Gecerli bir YouTube video adresi girin.";
+    if (!isWebUrl(pageUrl)) {
+        media.error = "Gecerli bir web video adresi girin (http:// veya https://).";
         return media;
     }
 
@@ -113,10 +114,14 @@ YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl, const int maxH
         L"--dump-single-json",
         L"--format",
         utf8ToWide(youtubeFormatSelector(maxHeight)),
+        // End of options: the URL can come from a web page via dk2vr: links,
+        // and must never be read as a yt-dlp option.
+        L"--",
         utf8ToWide(pageUrl),
     };
 
-    log::info("YouTube medya adresi yt-dlp ile cozuluyor.");
+    log::info(std::string(isLikelyYouTubeUrl(pageUrl) ? "YouTube" : "Web")
+        + " medya adresi yt-dlp ile cozuluyor.");
     const ProcessResult process = runProcess(executable_, arguments);
     if (!process.started) {
         media.error = "yt-dlp baslatilamadi: " + process.error;

@@ -92,13 +92,11 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Configuration Release
 
 1. DK2'yi bilgisayara bağlayın. Windows'un **genişletilmiş masaüstü** modunda, 1920×1080 (yatay) ve **75 Hz**'de bir ekran olarak tanıtılmalıdır (Rift Display için Oculus'un eski yazılımı veya Intel/Nvidia kenar boşluğu ayarı).
 2. `DK2VRPlayer.exe`'yi çalıştırın. Pencere otomatik olarak 1920×1080 çözünürlüğe gelir.
-3. **Yerel 360 video aç** düğmesiyle bir dosya seçin ya da pencereye sürükleyin; **YouTube** sekmesine bir 360 URL'si girip oynatın. Yerel video açıldığında projeksiyon modu önce dosya adı etiketlerine, yoksa en-boy oranına göre otomatik seçilir:
-   - Dosya adında `_180` / `vr180` → **180 derece SBS 3D** (kare görüntüde **180 derece mono**)
-   - `_TB`, `_OU`, `_3dv`, `top-bottom` → **3D 360 üst/alt**
-   - `_LR`, `_SBS`, `_3dh`, `side-by-side` → **3D 360 yan yana**
-   - `_EAC`, `cubemap` → **Cubemap (EAC)**
-   - Etiket yoksa: **~1:1** → **3D 360 üst/alt**, **~3:2** → **Cubemap (EAC)**, diğerleri (2:1 dahil) → **Mono 360**
-   - İstediğiniz modu **"360 video ve lens ayarları"** panelindeki **Projeksiyon** açılır listesinden veya **1-6** tuşlarıyla manuel olarak da seçebilirsiniz.
+3. **Yerel 360 video aç** düğmesiyle bir dosya seçin ya da pencereye sürükleyin; **YouTube** sekmesine bir 360 URL'si girip oynatın. Yerel video açıldığında projeksiyon modu şu sırayla otomatik seçilir:
+   1. **Dosyanın içindeki 360 bilgisi:** MP4'te `sv3d`/`st3d` (Spherical Video V2) veya eski `GSpherical` XML'i, MKV/WebM'de `ProjectionType` ve `StereoMode`. Kameraların, Spatial Media Metadata Injector'ın ve yt-dlp indirmelerinin yazdığı bilgi budur.
+   2. **Dosya adı etiketleri:** `_180` / `vr180` → **180 derece SBS 3D** (kare görüntüde **180 derece mono**); `_TB`, `_OU`, `_3dv`, `top-bottom` → **3D 360 üst/alt**; `_LR`, `_SBS`, `_3dh`, `side-by-side` → **3D 360 yan yana**; `_EAC`, `cubemap` → **Cubemap (EAC)**.
+   3. **Görüntünün kendisi:** Hiçbiri yoksa en-boy oranıyla başlanır ve ilk karelere bakılır: iki yarı (üst/alt veya sol/sağ) neredeyse aynıysa stereo, ortada keskin bir kesik varsa EAC küp haritası, iki yarının köşeleri siyahsa VR180. Karar birkaç net karenin çoğunluğuyla verilir; siyahla açılan videolarda görüntü gelene kadar beklenir.
+   - İstediğiniz modu **Görüntü** sekmesindeki **Projeksiyon** açılır listesinden veya **1-6** tuşlarıyla manuel olarak da seçebilirsiniz.
    - **180 derece modlarında** video yalnızca ön yarım küreye yansıtılır; başınızı 180°'den fazla çevirdiğinizde arka taraf siyah kalır (360° sarmalama yok).
 4. **DK2 ekranında VR tam ekran (F11)** düğmesi (veya `F11` kısayolu) seçili HDMI ekranını tam ekran yapar, fare imleci gizlenir ve OpenHMD üzerinden okunan yönelim ile stereo görüntü hesaplanır. **Esc** veya `F11` ile geri dönülür.
 
@@ -107,7 +105,16 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Configuration Release
 - **Projeksiyon:** YouTube'un VR akışları `mesh` etiketiyle gelir: 360 videolar EAC küp haritası, VR180 videolar yan yana iki yarım küredir. Uygulama başlıktan ve ilk karelerden (VR180'de köşeler siyahtır) doğru modu seçer.
 - **Akış:** YouTube sunucuları yalnızca ~10 MB'lık parçalı istekleri kabul eder; libVLC'nin açık uçlu isteği 403 alır. Uygulama bu yüzden akışları `127.0.0.1` üzerindeki küçük bir parçalı proxy'den oynatır.
 - **"HTTP 403" / video açılmıyor:** *Kaynak* sekmesindeki *Güncelle* düğmesiyle yt-dlp'yi güncelleyin (`yt-dlp -U`).
-- **Komut satırı:** `DK2VRPlayer.exe <youtube-adresi | video-dosyası>` verilen videoyu açılışta oynatır.
+- **Komut satırı:** `DK2VRPlayer.exe <web-adresi | dk2vr:-bağlantısı | video-dosyası>` verilen videoyu açılışta oynatır. Oynatıcı zaten açıksa yeni pencere açılmaz; adres açık olana iletilir.
+
+### Tarayıcıdaki VR videolarını DK2'de açmak
+1. *Kaynak* sekmesinde **dk2vr:// bağlantısını kaydet**'e basın. Kayıt yalnızca bu kullanıcı hesabına yazılır (`HKCU\Software\Classes\dk2vr`); SteamVR'ı ve diğer programları etkilemez, aynı yerden kaldırılabilir.
+2. **Yer imini ekle...** tarayıcıda bir sayfa açar; oradaki **DK2'de aç** düğmesini yer imi çubuğuna sürükleyin.
+3. Bir video sayfasındayken yer imine basın. Tarayıcı ilk seferde oynatıcının açılmasına izin ister.
+
+Sayfa önce yt-dlp ile çözülür (YouTube, Vimeo ve yt-dlp'nin desteklediği yüzlerce site); çözülemezse sayfadaki `<video>` öğesinin doğrudan adresi oynatılır. DRM korumalı içerik (Netflix vb.) ve `blob:` ile parça parça yüklenen oynatıcılar bu yolla açılamaz. Projeksiyon her durumda görüntüden algılanır.
+
+> Oynatıcı ile SteamVR DK2'yi aynı anda kullanamaz: SteamVR açıkken oynatıcı jiroskopu açamaz.
 
 ### Klavye kısayolları
 | Tuş | İşlev |

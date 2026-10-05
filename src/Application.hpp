@@ -2,7 +2,9 @@
 
 #include "DriverInstaller.hpp"
 #include "HmdManager.hpp"
+#include "BrowserIntegration.hpp"
 #include "Process.hpp"
+#include "SpatialMetadata.hpp"
 #include "Renderer.hpp"
 #include "VideoPlayer.hpp"
 #include "YouTubeHistory.hpp"
@@ -15,6 +17,7 @@
 #include <filesystem>
 #include <future>
 #include <string>
+#include <vector>
 
 struct SDL_Window;
 struct SDL_version;
@@ -53,13 +56,22 @@ private:
     void startYtDlpVersionQuery();
     void startYtDlpUpdate();
     void pollBackgroundTasks();
+    void startLayoutCheck(bool youtubeMesh);
+    void handleLayoutCheckFrame(const std::uint8_t* pixels, unsigned width, unsigned height,
+        unsigned pitch);
     void loadSettings();
     void saveSettings() const;
     [[nodiscard]] std::filesystem::path settingsPath() const;
     void startYouTubeResolution();
     void playResolvedMedia(const YouTubeMedia& media);
     void playLocalFile(const std::filesystem::path& path);
-    void playYouTubeUrl(const std::string& url);
+    // Any http(s) page: resolved with yt-dlp; when that fails and the
+    // browser supplied the page's direct <video> source, that is played.
+    void playWebUrl(const std::string& url, const std::string& fallbackVideoUrl = {});
+    void playDirectWebVideo(const std::string& videoUrl, const std::string& pageUrl);
+    void installArgumentReceiver();
+    void processForwardedArguments();
+    void drawBrowserIntegration();
     void enterVrMode();
     void leaveVrMode();
     void toggleVrMode();
@@ -105,9 +117,21 @@ private:
     // Interface state.
     bool uiVisible_ {true};
     bool playingYouTube_ {false};
-    // Frames left in which to check whether a YouTube "mesh" stream is
-    // really VR180 side-by-side rather than an EAC cubemap.
+    // Direct <video> source sent along with the page by the bookmarklet.
+    std::string fallbackVideoUrl_;
+    bool protocolRegistered_ {false};
+    // Browser the bookmark page opens in; Brave first when installed.
+    std::vector<InstalledBrowser> browsers_;
+    std::string bookmarkBrowser_;
+    // Projection detection from the picture (see classifyFrameLayout): frames
+    // left to look at, every Nth one is classified and the first few clear
+    // answers vote. For a YouTube "mesh" stream only "EAC or VR180" is asked.
     int layoutCheckFramesLeft_ {0};
+    int layoutCheckCounter_ {0};
+    bool layoutCheckYouTubeMesh_ {false};
+    std::vector<FrameLayoutGuess> layoutVotes_;
+    // Spherical metadata of the open local file.
+    SpatialMetadata localMetadata_;
     bool timelineDragging_ {false};
     float timelineDragSeconds_ {0.0F};
     bool muted_ {false};

@@ -301,28 +301,11 @@ bool VideoPlayer::initialized() const noexcept
 bool VideoPlayer::consumeLatestFrame(
     const std::function<void(const std::uint8_t*, unsigned, unsigned, unsigned)>& consumer)
 {
-    // Ask libVLC for the visible size outside the frame lock: the decoder
-    // thread holds that lock while it writes a picture.
-    unsigned visibleWidth = visibleWidth_;
-    unsigned visibleHeight = visibleHeight_;
-    if ((visibleWidth == 0 || visibleHeight == 0) && player_ != nullptr) {
-        unsigned width = 0;
-        unsigned height = 0;
-        if (libvlc_video_get_size(player_, 0, &width, &height) == 0 && width > 0 && height > 0) {
-            visibleWidth_ = visibleWidth = width;
-            visibleHeight_ = visibleHeight = height;
-        }
-    }
-
     std::scoped_lock lock(frameMutex_);
     if (producedFrame_ == consumedFrame_ || framePixels_.empty()) {
         return false;
     }
-    // The picture sits in the top-left of the padded buffer; the unchanged
-    // pitch lets the consumer skip the padding without copying.
-    const unsigned width = visibleWidth > 0 && visibleWidth <= frameWidth_ ? visibleWidth : frameWidth_;
-    const unsigned height = visibleHeight > 0 && visibleHeight <= frameHeight_ ? visibleHeight : frameHeight_;
-    consumer(framePixels_.data(), width, height, framePitch_);
+    consumer(framePixels_.data(), frameWidth_, frameHeight_, framePitch_);
     consumedFrame_ = producedFrame_;
     return true;
 }
@@ -334,6 +317,20 @@ unsigned VideoPlayer::formatSetup(void** opaque, char* chroma, unsigned* width, 
     if (self == nullptr || *width == 0 || *height == 0
         || *width > 16384 || *height > 16384) {
         return 0;
+    }
+
+    // VLC offers the decoder's block-aligned size (1920x1088 for 1080p) and
+    // then scales the real picture to fill it, stretching it slightly.
+    // Asking for the real size instead gets the picture 1:1.
+    unsigned visibleWidth = 0;
+    unsigned visibleHeight = 0;
+    if (self->player_ != nullptr
+        && libvlc_video_get_size(self->player_, 0, &visibleWidth, &visibleHeight) == 0
+        && visibleWidth > 0 && visibleHeight > 0
+        && visibleWidth <= *width && visibleHeight <= *height
+        && *width - visibleWidth < 64 && *height - visibleHeight < 64) {
+        *width = visibleWidth;
+        *height = visibleHeight;
     }
 
     constexpr unsigned bytesPerPixel = 4;
@@ -353,8 +350,6 @@ unsigned VideoPlayer::formatSetup(void** opaque, char* chroma, unsigned* width, 
     self->framePixels_.assign(byteCount, 0);
     self->producedFrame_ = 0;
     self->consumedFrame_ = 0;
-    self->visibleWidth_ = 0;
-    self->visibleHeight_ = 0;
     return 1;
 }
 

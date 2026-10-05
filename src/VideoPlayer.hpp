@@ -2,7 +2,6 @@
 
 #include "RangeProxy.hpp"
 
-#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -82,10 +81,6 @@ private:
     unsigned framePitch_ {0};
     std::uint64_t producedFrame_ {0};
     std::uint64_t consumedFrame_ {0};
-    // Decoders allocate frames padded to their block size (1920x1080 video
-    // arrives as 1920x1088). This is the real picture size, 0 until known.
-    std::atomic<unsigned> visibleWidth_ {0};
-    std::atomic<unsigned> visibleHeight_ {0};
 };
 
 } // namespace dk2vr

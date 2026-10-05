@@ -206,6 +206,7 @@ endif()
 set(DK2VR_SOURCES
     src/main.cpp
     src/Application.cpp
+    src/BrowserIntegration.cpp
     src/HmdManager.cpp
     src/Dk2WinUsb.cpp
     src/ImuPacket.cpp
@@ -221,6 +222,7 @@ set(DK2VR_SOURCES
     src/Logger.cpp
     src/Projection.cpp
     src/RangeProxy.cpp
+    src/SpatialMetadata.cpp
     resources/app.rc
 )
 
@@ -292,10 +294,12 @@ endif()
 
 if(DK2VR_BUILD_TESTS)
     enable_testing()
-    add_executable(DK2VRCoreTests tests/CoreTests.cpp src/Projection.cpp
+    add_executable(DK2VRCoreTests tests/CoreTests.cpp src/Projection.cpp src/SpatialMetadata.cpp
+        src/BrowserIntegration.cpp src/Process.cpp
         src/ImuPacket.cpp src/OrientationFilter.cpp)
     target_include_directories(DK2VRCoreTests PRIVATE src)
-    target_link_libraries(DK2VRCoreTests PRIVATE glm::glm)
+    target_link_libraries(DK2VRCoreTests PRIVATE glm::glm shell32 advapi32)
+    target_compile_definitions(DK2VRCoreTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     if(MSVC)
         target_compile_options(DK2VRCoreTests PRIVATE /W4 /permissive- /utf-8)
     endif()

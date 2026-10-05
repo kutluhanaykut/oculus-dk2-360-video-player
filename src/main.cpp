@@ -1,4 +1,5 @@
 #include "Application.hpp"
+#include "BrowserIntegration.hpp"
 
 #include "Process.hpp"
 
@@ -12,6 +13,21 @@ int APIENTRY wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previousInstance*/,
     wchar_t* /*commandLine*/, int /*showCommand*/)
 {
     try {
+        // DK2VRPlayer.exe <url | dk2vr: link | video file>. When a player is
+        // already running (e.g. a "DK2'de ac" click while watching), hand
+        // the argument to it instead of opening a second window.
+        std::wstring argument;
+        int argumentCount = 0;
+        if (wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount)) {
+            if (argumentCount > 1) {
+                argument = arguments[1];
+            }
+            LocalFree(arguments);
+        }
+        if (dk2vr::forwardToRunningInstance(argument)) {
+            return 0;
+        }
+
         dk2vr::Application application;
         std::string error;
         if (!application.initialize(error)) {
@@ -22,13 +38,8 @@ int APIENTRY wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previousInstance*/,
                 MB_OK | MB_ICONERROR);
             return 1;
         }
-        // DK2VRPlayer.exe <youtube-url | video-file> starts playing it at once.
-        int argumentCount = 0;
-        if (wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount)) {
-            if (argumentCount > 1) {
-                application.openFromCommandLine(arguments[1]);
-            }
-            LocalFree(arguments);
+        if (!argument.empty()) {
+            application.openFromCommandLine(argument);
         }
         return application.run();
     } catch (const std::exception& exception) {

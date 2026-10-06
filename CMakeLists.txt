@@ -282,6 +282,8 @@ add_custom_command(TARGET DK2VRPlayer POST_BUILD
         "${DK2VR_VLC_ROOT}/libvlccore.dll" "$<TARGET_FILE_DIR:DK2VRPlayer>/libvlccore.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/third_party/yt-dlp.exe" "$<TARGET_FILE_DIR:DK2VRPlayer>/yt-dlp.exe"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/browser-extension" "$<TARGET_FILE_DIR:DK2VRPlayer>/browser-extension"
     VERBATIM
 )
 if(DK2VR_PACKAGE_VLC_PLUGINS)

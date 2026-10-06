@@ -14,6 +14,7 @@ namespace {
 
 constexpr wchar_t kProtocolKey[] = L"Software\\Classes\\dk2vr";
 constexpr wchar_t kSingleInstanceMutex[] = L"Local\\DK2VRPlayer.SingleInstance";
+constexpr std::size_t kMaxCookieBytes = 64U * 1024U;
 
 bool startsWithNoCase(const std::string_view value, const std::string_view prefix)
 {
@@ -131,6 +132,79 @@ std::string percentDecode(const std::string_view value)
     return decoded;
 }
 
+std::string cookieHeaderFor(const std::string& netscapeCookies, const std::string& url)
+{
+    if (!isWebUrl(url)) {
+        return {};
+    }
+    const auto lower = [](std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(),
+            [](const unsigned char character) { return static_cast<char>(std::tolower(character)); });
+        return value;
+    };
+    const bool secure = startsWithNoCase(url, "https://");
+    const std::size_t hostStart = url.find("://") + 3;
+    const std::size_t hostEnd = (std::min)(url.find_first_of(":/?#", hostStart), url.size());
+    const std::string host = lower(url.substr(hostStart, hostEnd - hostStart));
+    const std::size_t pathStart = url.find('/', hostStart);
+    const std::string path = pathStart == std::string::npos ? "/" : url.substr(pathStart);
+
+    std::string header;
+    std::size_t lineStart = 0;
+    while (lineStart < netscapeCookies.size()) {
+        std::size_t lineEnd = netscapeCookies.find('\n', lineStart);
+        if (lineEnd == std::string::npos) {
+            lineEnd = netscapeCookies.size();
+        }
+        std::string line = netscapeCookies.substr(lineStart, lineEnd - lineStart);
+        lineStart = lineEnd + 1;
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        // HttpOnly cookies are written as "#HttpOnly_<domain>"; other '#'
+        // lines are comments.
+        constexpr std::string_view httpOnly = "#HttpOnly_";
+        if (line.rfind(httpOnly, 0) == 0) {
+            line.erase(0, httpOnly.size());
+        } else if (line.empty() || line.front() == '#') {
+            continue;
+        }
+
+        // domain, include-subdomains, path, secure, expiry, name, value
+        std::vector<std::string> fields;
+        std::size_t fieldStart = 0;
+        while (fields.size() < 6) {
+            const std::size_t tab = line.find('\t', fieldStart);
+            if (tab == std::string::npos) {
+                break;
+            }
+            fields.push_back(line.substr(fieldStart, tab - fieldStart));
+            fieldStart = tab + 1;
+        }
+        if (fields.size() < 6 || fields[5].empty()) {
+            continue;
+        }
+        const std::string value = line.substr(fieldStart);
+
+        std::string domain = lower(fields[0]);
+        if (!domain.empty() && domain.front() == '.') {
+            domain.erase(0, 1);
+        }
+        const bool domainMatches = host == domain
+            || (host.size() > domain.size()
+                && host.compare(host.size() - domain.size(), domain.size(), domain) == 0
+                && host[host.size() - domain.size() - 1] == '.');
+        if (!domainMatches || path.rfind(fields[2], 0) != 0 || (fields[3] == "TRUE" && !secure)) {
+            continue;
+        }
+        if (!header.empty()) {
+            header += "; ";
+        }
+        header += fields[5] + "=" + value;
+    }
+    return header;
+}
+
 bool isDk2vrLink(const std::string_view argument)
 {
     return startsWithNoCase(argument, "dk2vr:");
@@ -147,6 +221,29 @@ std::optional<LaunchRequest> parseLaunchUrl(const std::string_view argument)
             rest = rest.substr(query + 1);
             request.pageUrl = queryValue(rest, "url");
             request.videoUrl = queryValue(rest, "video");
+            request.cookies = queryValue(rest, "cookies");
+            if (request.cookies.size() > kMaxCookieBytes) {
+                request.cookies.clear();
+            }
+            // Becomes a yt-dlp argument and an HTTP header: printable ASCII
+            // only, bounded.
+            request.userAgent = queryValue(rest, "ua");
+            const bool printable = std::all_of(request.userAgent.begin(), request.userAgent.end(),
+                [](const char character) {
+                    const auto byte = static_cast<unsigned char>(character);
+                    return byte >= 0x20 && byte < 0x7F && character != '"';
+                });
+            if (!printable || request.userAgent.size() > 512) {
+                request.userAgent.clear();
+            }
+            request.projectionHint = queryValue(rest, "projection");
+            if (request.projectionHint.size() > 40
+                || !std::all_of(request.projectionHint.begin(), request.projectionHint.end(), [](const char character) {
+                       return std::isalnum(static_cast<unsigned char>(character)) != 0 || character == '_'
+                           || character == '-';
+                   })) {
+                request.projectionHint.clear();
+            }
         } else {
             // dk2vr:<url> or dk2vr://<percent-encoded url>
             while (!rest.empty() && rest.front() == '/') {

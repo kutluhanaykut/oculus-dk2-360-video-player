@@ -140,9 +140,17 @@ bool VideoPlayer::playNetwork(
 
     // Streams that only serve bounded ranges (YouTube) go through the local
     // proxy; VLC's own open-ended range request would get 403 Forbidden.
+    // So do streams that need cookies, which VLC 3 cannot send. HLS/DASH
+    // manifests cannot be relayed (their segments are separate URLs).
+    const auto isManifest = [](const std::string& url) {
+        const std::string path = url.substr(0, url.find('?'));
+        return path.size() >= 5
+            && (path.compare(path.size() - 5, 5, ".m3u8") == 0 || path.compare(path.size() - 4, 4, ".mpd") == 0);
+    };
+    const bool needsCookies = httpHeaders.count("Cookie") != 0 && !isManifest(videoUrl);
     std::string playVideoUrl = videoUrl;
     std::string playAudioUrl = audioUrl;
-    if (httpChunkSize > 0) {
+    if (httpChunkSize > 0 || needsCookies) {
         if (!rangeProxy_.start(error)) {
             return false;
         }

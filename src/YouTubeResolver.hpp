@@ -32,16 +32,31 @@ struct YouTubeMedia {
     // yt-dlp's downloader_options.http_chunk_size: the server only serves
     // bounded ranges, so playback must go through RangeProxy. 0 = not needed.
     std::uint64_t httpChunkSize {0};
+    // Cookies yt-dlp says the video stream needs ("a=1; b=2"); empty if none.
+    std::string videoCookieHeader;
+    // yt-dlp's protocol for the video stream: "https", "m3u8_native", ...
+    std::string videoProtocol;
     std::string error;
 };
 
+
+struct ResolveOptions {
+    // Caps the video stream height (e.g. 1080); 0 means the default.
+    int maxHeight {0};
+    // Netscape cookies.txt handed to yt-dlp (--cookies); empty for none.
+    std::filesystem::path cookiesFile;
+    // The browser's User-Agent; empty keeps yt-dlp's own.
+    std::string userAgent;
+};
 
 class YouTubeResolver {
 public:
     explicit YouTubeResolver(std::filesystem::path executable);
 
     // maxHeight caps the video stream (e.g. 1080); 0 means the default.
-    [[nodiscard]] YouTubeMedia resolve(const std::string& pageUrl, int maxHeight = 0) const;
+    // For sites behind Cloudflare's bot check, a failed attempt is retried
+    // once with yt-dlp impersonating a browser's TLS fingerprint.
+    [[nodiscard]] YouTubeMedia resolve(const std::string& pageUrl, const ResolveOptions& options = {}) const;
     [[nodiscard]] bool available() const;
     [[nodiscard]] const std::filesystem::path& executable() const noexcept;
 

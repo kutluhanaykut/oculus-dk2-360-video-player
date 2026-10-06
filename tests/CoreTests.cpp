@@ -241,6 +241,39 @@ int main()
         require(!dk2vr::parseLaunchUrl(R"(C:\Videos\clip.mp4)").has_value(),
             "Local paths are not launch URLs");
         require(dk2vr::bookmarkletUrl().rfind("javascript:", 0) == 0, "Bookmarklet must be a javascript: URL");
+
+        // Cookies from the extension: only those for the stream's host,
+        // path and scheme go into the Cookie header.
+        const std::string jar =
+            "# Netscape HTTP Cookie File\n"
+            "#HttpOnly_.example.com\tTRUE\t/\tTRUE\t0\tsession\tabc\n"
+            "cdn.example.com\tFALSE\t/media\tFALSE\t0\tcdn\t1\n"
+            "other.com\tFALSE\t/\tFALSE\t0\tforeign\tx\n";
+        require(dk2vr::cookieHeaderFor(jar, "https://cdn.example.com/media/a.mp4") == "session=abc; cdn=1",
+            "Subdomain, host-only and path cookies must match");
+        require(dk2vr::cookieHeaderFor(jar, "http://cdn.example.com/media/a.mp4") == "cdn=1",
+            "Secure cookies must not go to http");
+        require(dk2vr::cookieHeaderFor(jar, "https://notexample.com/").empty(),
+            "A domain suffix that is not a subdomain must not match");
+        const auto withCookies = dk2vr::parseLaunchUrl("dk2vr://open?url=https%3A%2F%2Fx.com%2Fv&cookies=a%09b");
+        require(withCookies && withCookies->cookies == "a\tb", "The cookies parameter must be decoded");
+        const auto withAgent = dk2vr::parseLaunchUrl(
+            "dk2vr://open?url=https%3A%2F%2Fx.com%2Fv&ua=Mozilla%2F5.0%20(Windows%20NT%2010.0)");
+        require(withAgent && withAgent->userAgent == "Mozilla/5.0 (Windows NT 10.0)",
+            "The browser User-Agent must be passed on");
+        const auto badAgent = dk2vr::parseLaunchUrl("dk2vr://open?url=https%3A%2F%2Fx.com%2Fv&ua=a%0D%0AX-Evil%3A%201");
+        require(badAgent && badAgent->userAgent.empty(), "A User-Agent with line breaks must be dropped");
+        const auto hinted = dk2vr::parseLaunchUrl("dk2vr://open?url=https%3A%2F%2Fx.com%2Fv&projection=STEREO_180_LR");
+        require(hinted && hinted->projectionHint == "STEREO_180_LR", "The projection hint must be passed on");
+
+        using dk2vr::projectionFromPlayerFormat;
+        require(projectionFromPlayerFormat("STEREO_180_LR") == ProjectionMode::Fisheye180Sbs,
+            "DL8 STEREO_180_LR must be VR180 side-by-side");
+        require(projectionFromPlayerFormat("MONO_180") == ProjectionMode::Fisheye180, "DL8 MONO_180 must be 180 mono");
+        require(projectionFromPlayerFormat("STEREO_360_TB") == ProjectionMode::StereoTopBottom,
+            "DL8 STEREO_360_TB must be 360 top/bottom");
+        require(projectionFromPlayerFormat("MONO_360") == ProjectionMode::Mono360, "DL8 MONO_360 must be mono 360");
+        require(!projectionFromPlayerFormat("").has_value(), "No hint means no override");
     }
 
     // DK2 IMU paket cozucu.

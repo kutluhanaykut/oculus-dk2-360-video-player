@@ -112,6 +112,15 @@ powershell -ExecutionPolicy Bypass -File scripts/run.ps1 -Configuration Release
 2. **Yer imini ekle...** tarayıcıda bir sayfa açar; oradaki **DK2'de aç** düğmesini yer imi çubuğuna sürükleyin.
 3. Bir video sayfasındayken yer imine basın. Tarayıcı ilk seferde oynatıcının açılmasına izin ister.
 
+**Tarayıcı eklentisi (önerilen):** *Kaynak* sekmesindeki **Eklentiyi Brave'e kur...** eklenti klasörünü ve tarayıcının eklentiler sayfasını açar. *Geliştirici modu*'nu açıp **Paketlenmemiş öğe yükle** ile `browser-extension` klasörünü seçin; araç çubuğuna gelen **DK2'de aç** düğmesi yer imiyle aynı işi yapar, ayrıca:
+- sayfadaki bütün video kaynaklarını tarar (`<video>`, `<source>`, DL8/DeoVR `<dl8-video>`, gizli katmanlar, iframe'ler ve sayfanın indirdiği `.mp4`/`.m3u8`/`.mpd`) ve önizlemeler yerine en yüksek kaliteyi seçer;
+- oynatıcının bildirdiği projeksiyonu (örn. `STEREO_180_LR`) gönderir;
+- sitenin çerezlerini ve tarayıcının User-Agent'ını gönderir: giriş gerektiren ve Cloudflare doğrulaması isteyen siteler için. Çerezler yalnızca bellekte tutulur, log'a yazılmaz; yt-dlp'ye geçici bir dosyayla verilip hemen silinir. YouTube'da kullanılmaz.
+
+Cloudflare engeli çıkarsa yt-dlp tarayıcı taklidiyle (`--impersonate chrome`) bir kez daha dener. Bazı sitelerde video ancak sayfada oynatma başlayınca yüklenir: önce videoyu başlatıp sonra düğmeye basın.
+
+> **"SSL: CERTIFICATE_VERIFY_FAILED ... self signed certificate":** Site servis sağlayıcının DNS'inde engelli olabilir; tarayıcı güvenli DNS ile açarken yt-dlp engel sayfasına düşer. Windows'ta DNS-over-HTTPS'i açın veya VPN kullanın.
+
 Sayfa önce yt-dlp ile çözülür (YouTube, Vimeo ve yt-dlp'nin desteklediği yüzlerce site); çözülemezse sayfadaki `<video>` öğesinin doğrudan adresi oynatılır. DRM korumalı içerik (Netflix vb.) ve `blob:` ile parça parça yüklenen oynatıcılar bu yolla açılamaz. Projeksiyon her durumda görüntüden algılanır.
 
 > Oynatıcı ile SteamVR DK2'yi aynı anda kullanamaz: SteamVR açıkken oynatıcı jiroskopu açamaz.

@@ -67,7 +67,9 @@ private:
     void playLocalFile(const std::filesystem::path& path);
     // Any http(s) page: resolved with yt-dlp; when that fails and the
     // browser supplied the page's direct <video> source, that is played.
-    void playWebUrl(const std::string& url, const std::string& fallbackVideoUrl = {});
+    void playWebUrl(const std::string& url, const std::string& fallbackVideoUrl = {},
+        const std::string& cookies = {}, const std::string& userAgent = {},
+        const std::string& projectionHint = {});
     void playDirectWebVideo(const std::string& videoUrl, const std::string& pageUrl);
     void installArgumentReceiver();
     void processForwardedArguments();
@@ -119,6 +121,15 @@ private:
     bool playingYouTube_ {false};
     // Direct <video> source sent along with the page by the bookmarklet.
     std::string fallbackVideoUrl_;
+    // Site cookies (Netscape format) from the browser extension. Kept in
+    // memory only and never logged; handed to yt-dlp through a temporary
+    // file that is deleted once the page is resolved.
+    std::string pageCookies_;
+    std::filesystem::path cookiesFile_;
+    // The browser's User-Agent that came with those cookies.
+    std::string pageUserAgent_;
+    // Projection the page's player declared; beats any guess.
+    std::string pageProjectionHint_;
     bool protocolRegistered_ {false};
     // Browser the bookmark page opens in; Brave first when installed.
     std::vector<InstalledBrowser> browsers_;

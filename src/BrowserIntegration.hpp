@@ -26,7 +26,20 @@ struct LaunchRequest {
     // Optional direct media URL the bookmarklet read from the page's <video>,
     // played when yt-dlp cannot resolve the page.
     std::string videoUrl;
+    // Optional cookies of the site in Netscape cookies.txt format, sent by
+    // the browser extension for sites that need a login. Never logged.
+    std::string cookies;
+    // The browser's User-Agent, sent with the cookies: Cloudflare ties its
+    // clearance cookie to it, so requests must carry the same one.
+    std::string userAgent;
+    // Projection the page's player declares (DL8/DeoVR "format", e.g.
+    // STEREO_180_LR); empty when unknown.
+    std::string projectionHint;
 };
+
+// Cookie header value ("a=1; b=2") of the Netscape cookies that apply to the
+// URL's host, path and scheme; empty when none do.
+[[nodiscard]] std::string cookieHeaderFor(const std::string& netscapeCookies, const std::string& url);
 
 // True for an http(s) URL without whitespace or control characters. Anything
 // handed to yt-dlp must pass this, so a link can never smuggle in an option.

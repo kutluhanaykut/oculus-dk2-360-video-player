@@ -15,6 +15,7 @@
 #include <imgui_impl_sdl2.h>
 
 #include <SDL_syswm.h>
+#include <shellapi.h>
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -444,6 +445,11 @@ void Application::updateAsyncResolution()
     }
     resolving_ = false;
     const YouTubeMedia media = resolutionFuture_.get();
+    if (!cookiesFile_.empty()) {
+        std::error_code removeError;
+        std::filesystem::remove(cookiesFile_, removeError);
+        cookiesFile_.clear();
+    }
     if (!media.success) {
         pendingResumeMs_ = -1;
         if (!fallbackVideoUrl_.empty()) {
@@ -796,18 +802,42 @@ void Application::drawBrowserIntegration()
             setError(pageError);
         }
     }
-    ImGui::TextDisabled("Video sayfasindayken 'DK2'de ac' yer imine basin; sayfa burada acilir.");
+    if (ImGui::Button(browsers_.empty() ? "Eklentiyi kur..." : ("Eklentiyi " + bookmarkBrowser_ + "'e kur...").c_str())) {
+        // Unpacked extensions are loaded by hand: show the folder and open
+        // the browser's extension page.
+        const std::filesystem::path folder = executableDirectory() / L"browser-extension";
+        ShellExecuteW(nullptr, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if (!browserExecutable.empty()) {
+            const std::wstring page = bookmarkBrowser_ == "Brave" ? L"brave://extensions/"
+                : bookmarkBrowser_ == "Edge"                    ? L"edge://extensions/"
+                                                                : L"chrome://extensions/";
+            ShellExecuteW(nullptr, L"open", browserExecutable.c_str(), page.c_str(), nullptr, SW_SHOWNORMAL);
+        }
+        setStatus("Eklentiler sayfasinda 'Gelistirici modu'nu acin, 'Paketlenmemis oge yukle' ile "
+                  "acilan browser-extension klasorunu secin.");
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Yer imi gibi calisir, ayrica sitenin cerezlerini de gonderir:\n"
+                          "giris gerektiren sitelerde gerekir. YouTube'da cerez kullanilmaz.");
+    }
+    ImGui::TextDisabled("Video sayfasindayken 'DK2'de ac' yer imine veya eklenti dugmesine basin.");
 }
 
 void Application::playDirectWebVideo(const std::string& videoUrl, const std::string& pageUrl)
 {
     // Sites check where a request comes from; send the page as Referer and
     // look like a browser.
-    const std::map<std::string, std::string> headers {
+    std::map<std::string, std::string> headers {
         {"Referer", pageUrl},
         {"User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"},
     };
+    if (const std::string cookieHeader = cookieHeaderFor(pageCookies_, videoUrl); !cookieHeader.empty()) {
+        headers["Cookie"] = cookieHeader;
+    }
+    if (!pageUserAgent_.empty()) {
+        headers["User-Agent"] = pageUserAgent_;
+    }
     std::string playbackError;
     if (!video_.playNetwork(videoUrl, {}, headers, 0, playbackError)) {
         setError(playbackError);
@@ -827,6 +857,12 @@ void Application::playDirectWebVideo(const std::string& videoUrl, const std::str
     firstFrameLogged_ = false;
     autoProjectionPending_ = false;
     youtubeHistory_.add(title, pageUrl);
+    if (const auto declared = projectionFromPlayerFormat(pageProjectionHint_)) {
+        renderSettings_.projection = *declared;
+        setStatus("Sayfadaki video oynatiliyor (sayfanin bildirdigi " + std::string(projectionName(*declared))
+            + "): " + title);
+        return;
+    }
     renderSettings_.projection = guessProjection(title, 0, 0);
     startLayoutCheck(false);
     setStatus("Sayfadaki video oynatiliyor (projeksiyon goruntuden algilanacak): " + title);
@@ -1141,7 +1177,7 @@ void Application::changeYouTubeQuality(const int maxHeight)
     pendingResumeMs_ = state == PlaybackState::Playing || state == PlaybackState::Paused
         ? video_.time()
         : -1;
-    playWebUrl(currentYouTubeUrl_, fallbackVideoUrl_);
+    playWebUrl(currentYouTubeUrl_, fallbackVideoUrl_, pageCookies_, pageUserAgent_, pageProjectionHint_);
 }
 
 void Application::startYtDlpVersionQuery()
@@ -1321,8 +1357,20 @@ void Application::startYouTubeResolution()
 
 void Application::playResolvedMedia(const YouTubeMedia& media)
 {
+    std::map<std::string, std::string> headers = media.httpHeaders;
+    std::string cookieHeader = media.videoCookieHeader;
+    if (cookieHeader.empty() && !pageCookies_.empty()) {
+        cookieHeader = cookieHeaderFor(pageCookies_, media.videoUrl);
+    }
+    if (!cookieHeader.empty()) {
+        headers["Cookie"] = cookieHeader;
+        log::info("Akis tarayici cerezleriyle aciliyor.");
+    }
+    if (!pageUserAgent_.empty()) {
+        headers["User-Agent"] = pageUserAgent_;
+    }
     std::string playbackError;
-    if (!video_.playNetwork(media.videoUrl, media.audioUrl, media.httpHeaders,
+    if (!video_.playNetwork(media.videoUrl, media.audioUrl, headers,
             media.httpChunkSize, playbackError)) {
         setError(playbackError);
         return;
@@ -1336,6 +1384,12 @@ void Application::playResolvedMedia(const YouTubeMedia& media)
     youtubeHistory_.add(media.title, currentYouTubeUrl_);
 
     const std::string source = isLikelyYouTubeUrl(currentYouTubeUrl_) ? "YouTube" : "Web";
+    if (const auto declared = projectionFromPlayerFormat(pageProjectionHint_)) {
+        renderSettings_.projection = *declared;
+        setStatus(source + " video oynatiliyor (sayfanin bildirdigi " + std::string(projectionName(*declared))
+            + "): " + media.title);
+        return;
+    }
 
     // yt-dlp "projection" alanina gore projeksiyon modunu otomatik sec.
     // "equirectangular" -> 360 derece, "cubemap" -> EAC cubemap,
@@ -1393,8 +1447,10 @@ void Application::openFromCommandLine(const std::wstring& argument)
     }
     if (const auto request = parseLaunchUrl(utf8)) {
         log::info("Disaridan web adresi alindi: " + request->pageUrl
-            + (request->videoUrl.empty() ? "" : " (sayfadaki video adresiyle)"));
-        playWebUrl(request->pageUrl, request->videoUrl);
+            + (request->videoUrl.empty() ? "" : " (sayfadaki video adresiyle)")
+            + (request->cookies.empty() ? "" : " (tarayici cerezleriyle)"));
+        playWebUrl(request->pageUrl, request->videoUrl, request->cookies, request->userAgent,
+            request->projectionHint);
         return;
     }
     if (isDk2vrLink(utf8)) {
@@ -1426,7 +1482,8 @@ void Application::playLocalFile(const std::filesystem::path& path)
     setStatus("Yerel 360 video oynatiliyor: " + currentTitle_);
 }
 
-void Application::playWebUrl(const std::string& url, const std::string& fallbackVideoUrl)
+void Application::playWebUrl(const std::string& url, const std::string& fallbackVideoUrl,
+    const std::string& cookies, const std::string& userAgent, const std::string& projectionHint)
 {
     if (resolving_) {
         return;
@@ -1436,6 +1493,11 @@ void Application::playWebUrl(const std::string& url, const std::string& fallback
         return;
     }
     fallbackVideoUrl_ = isWebUrl(fallbackVideoUrl) ? fallbackVideoUrl : std::string {};
+    // Not for YouTube: a logged-in session moves yt-dlp to clients whose
+    // streams need extra tokens, which brings back the 403 errors.
+    pageCookies_ = isLikelyYouTubeUrl(url) ? std::string {} : cookies;
+    pageUserAgent_ = isLikelyYouTubeUrl(url) ? std::string {} : userAgent;
+    pageProjectionHint_ = projectionHint;
     if (!resolver_.available()) {
         setError("yt-dlp.exe bulunamadi. scripts/bootstrap.ps1 calistirin.");
         return;
@@ -1450,8 +1512,25 @@ void Application::playWebUrl(const std::string& url, const std::string& fallback
     currentYouTubeUrl_ = url;
     resolving_ = true;
     const int maxHeight = youtubeMaxHeight_;
-    resolutionFuture_ = std::async(std::launch::async, [this, url, maxHeight] {
-        return resolver_.resolve(url, maxHeight);
+    cookiesFile_.clear();
+    if (!pageCookies_.empty()) {
+        std::error_code tempError;
+        cookiesFile_ = std::filesystem::temp_directory_path(tempError)
+            / ("dk2vr-cookies-" + std::to_string(GetCurrentProcessId()) + ".txt");
+        std::ofstream cookieStream(cookiesFile_, std::ios::binary | std::ios::trunc);
+        // yt-dlp expects the Netscape header line.
+        cookieStream << "# Netscape HTTP Cookie File\n" << pageCookies_;
+        cookieStream.close();
+        if (!cookieStream) {
+            cookiesFile_.clear();
+        }
+    }
+    ResolveOptions options;
+    options.maxHeight = maxHeight;
+    options.cookiesFile = cookiesFile_;
+    options.userAgent = pageUserAgent_;
+    resolutionFuture_ = std::async(std::launch::async, [this, url, options] {
+        return resolver_.resolve(url, options);
     });
 }
 

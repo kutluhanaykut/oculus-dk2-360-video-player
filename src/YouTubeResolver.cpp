@@ -36,28 +36,76 @@ void readHeaders(const Json& source, std::map<std::string, std::string>& destina
     }
 }
 
+// yt-dlp lists the cookies a format needs as Set-Cookie-like text:
+// "name=value; Domain=.x.com; Path=/; Secure; Expires=...; name2=value2".
+// Keep the name=value pairs, drop the attributes.
+std::string cookieHeaderFromYtDlp(const std::string& cookies)
+{
+    static const char* const attributes[] {
+        "domain", "path", "expires", "max-age", "secure", "httponly", "samesite", "version", "comment"};
+    std::string header;
+    std::size_t start = 0;
+    while (start < cookies.size()) {
+        std::size_t end = cookies.find(';', start);
+        if (end == std::string::npos) {
+            end = cookies.size();
+        }
+        std::string part = cookies.substr(start, end - start);
+        start = end + 1;
+        part.erase(0, part.find_first_not_of(' '));
+        const std::size_t equals = part.find('=');
+        const std::string key = lowerCase(part.substr(0, equals));
+        if (part.empty() || equals == std::string::npos || equals == 0
+            || std::find(std::begin(attributes), std::end(attributes), key) != std::end(attributes)) {
+            continue;
+        }
+        if (!header.empty()) {
+            header += "; ";
+        }
+        header += part;
+    }
+    return header;
+}
+
+// yt-dlp writes fields it does not know as null rather than leaving them
+// out (YouTube happens to fill them all, other sites do not), and
+// Json::value() throws on a null. Treat null like a missing field.
+std::string stringField(const Json& object, const char* key, std::string fallback = {})
+{
+    const auto found = object.find(key);
+    return found != object.end() && found->is_string() ? found->get<std::string>() : fallback;
+}
+
+unsigned unsignedField(const Json& object, const char* key)
+{
+    const auto found = object.find(key);
+    return found != object.end() && found->is_number_unsigned() ? found->get<unsigned>() : 0U;
+}
+
 bool hasVideo(const Json& format)
 {
-    return format.value("vcodec", std::string("none")) != "none";
+    return stringField(format, "vcodec", "none") != "none";
 }
 
 bool hasAudio(const Json& format)
 {
-    return format.value("acodec", std::string("none")) != "none";
+    return stringField(format, "acodec", "none") != "none";
 }
 
 void collectFormat(const Json& format, YouTubeMedia& media)
 {
-    const std::string url = format.value("url", std::string {});
+    const std::string url = stringField(format, "url");
     if (url.empty()) {
         return;
     }
     bool used = false;
     if (hasVideo(format) && media.videoUrl.empty()) {
         media.videoUrl = url;
-        media.videoWidth = format.value("width", 0U);
-        media.videoHeight = format.value("height", 0U);
+        media.videoWidth = unsignedField(format, "width");
+        media.videoHeight = unsignedField(format, "height");
         readHeaders(format, media.httpHeaders);
+        media.videoProtocol = stringField(format, "protocol");
+        media.videoCookieHeader = cookieHeaderFromYtDlp(stringField(format, "cookies"));
         used = true;
     }
     if (hasAudio(format) && !hasVideo(format) && media.audioUrl.empty()) {
@@ -95,7 +143,7 @@ YouTubeResolver::YouTubeResolver(std::filesystem::path executable)
 {
 }
 
-YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl, const int maxHeight) const
+YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl, const ResolveOptions& options) const
 {
     YouTubeMedia media;
     if (!available()) {
@@ -107,22 +155,48 @@ YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl, const int maxH
         return media;
     }
 
-    const std::vector<std::wstring> arguments {
-        L"--no-playlist",
-        L"--no-warnings",
-        L"--quiet",
-        L"--dump-single-json",
-        L"--format",
-        utf8ToWide(youtubeFormatSelector(maxHeight)),
-        // End of options: the URL can come from a web page via dk2vr: links,
-        // and must never be read as a yt-dlp option.
-        L"--",
-        utf8ToWide(pageUrl),
+    const bool youtube = isLikelyYouTubeUrl(pageUrl);
+    const auto buildArguments = [&](const bool impersonate) {
+        std::vector<std::wstring> arguments {
+            L"--no-playlist",
+            L"--no-warnings",
+            L"--quiet",
+            L"--dump-single-json",
+            L"--format",
+            utf8ToWide(youtubeFormatSelector(options.maxHeight)),
+        };
+        if (!options.cookiesFile.empty()) {
+            arguments.push_back(L"--cookies");
+            arguments.push_back(options.cookiesFile.wstring());
+        }
+        if (!options.userAgent.empty()) {
+            arguments.push_back(L"--user-agent");
+            arguments.push_back(utf8ToWide(options.userAgent));
+        }
+        if (impersonate) {
+            // Chrome's TLS fingerprint, for the generic extractor too.
+            arguments.push_back(L"--impersonate");
+            arguments.push_back(L"chrome");
+            arguments.push_back(L"--extractor-args");
+            arguments.push_back(L"generic:impersonate");
+        }
+        // End of options: the URL can come from a web page via dk2vr:
+        // links, and must never be read as a yt-dlp option.
+        arguments.push_back(L"--");
+        arguments.push_back(utf8ToWide(pageUrl));
+        return arguments;
     };
 
-    log::info(std::string(isLikelyYouTubeUrl(pageUrl) ? "YouTube" : "Web")
-        + " medya adresi yt-dlp ile cozuluyor.");
-    const ProcessResult process = runProcess(executable_, arguments);
+    log::info(std::string(youtube ? "YouTube" : "Web") + " medya adresi yt-dlp ile cozuluyor.");
+    ProcessResult process = runProcess(executable_, buildArguments(false));
+    // Cloudflare's bot check rejects yt-dlp's own TLS fingerprint; yt-dlp
+    // says so and suggests impersonation. Not for YouTube, which works as is.
+    if (process.started && process.exitCode != 0 && !youtube
+        && (process.output.find("impersonat") != std::string::npos
+            || process.output.find("Cloudflare") != std::string::npos)) {
+        log::info("Site tarayici dogrulamasi istiyor; yt-dlp tarayici taklidiyle tekrar deniyor.");
+        process = runProcess(executable_, buildArguments(true));
+    }
     if (!process.started) {
         media.error = "yt-dlp baslatilamadi: " + process.error;
         return media;
@@ -141,9 +215,24 @@ YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl, const int maxH
             media.error = "yt-dlp gecerli JSON dondurmedi.";
             return media;
         }
-        const Json root = Json::parse(process.output.substr(begin, end - begin + 1));
-        media.title = root.value("title", std::string("YouTube 360 video"));
-        media.projection = root.value("projection", std::string {});
+        const Json document = Json::parse(process.output.substr(begin, end - begin + 1));
+        // A page with several embedded videos comes back as a playlist; play
+        // its first entry that has a stream.
+        const Json* item = &document;
+        if (stringField(document, "_type") == "playlist") {
+            const auto entries = document.find("entries");
+            if (entries != document.end() && entries->is_array()) {
+                for (const Json& entry : *entries) {
+                    if (entry.is_object() && (entry.contains("url") || entry.contains("requested_formats"))) {
+                        item = &entry;
+                        break;
+                    }
+                }
+            }
+        }
+        const Json& root = *item;
+        media.title = stringField(root, "title", stringField(document, "title", "Web video"));
+        media.projection = stringField(root, "projection");
         readHeaders(root, media.httpHeaders);
         if (!media.projection.empty()) {
             log::info("YouTube video projeksiyonu: " + media.projection);
@@ -184,7 +273,7 @@ YouTubeMedia YouTubeResolver::resolve(const std::string& pageUrl, const int maxH
         }
 
         if (media.videoUrl.empty()) {
-            media.error = "YouTube video akis adresi bulunamadi.";
+            media.error = "Bu sayfada oynatilabilir video bulunamadi.";
             return media;
         }
 

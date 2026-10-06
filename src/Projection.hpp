@@ -47,6 +47,10 @@ enum class FrameLayoutGuess {
     const std::uint8_t* bgra, unsigned width, unsigned height, unsigned pitch);
 [[nodiscard]] std::optional<ProjectionMode> projectionFromFrameLayout(FrameLayoutGuess guess);
 
+// Projection from a web player's declared format: DL8/DeoVR style names
+// such as MONO_360, STEREO_180_LR, STEREO_360_TB, or "180_sbs", "eac".
+[[nodiscard]] std::optional<ProjectionMode> projectionFromPlayerFormat(std::string_view format);
+
 // Projection from file name tags alone; nullopt when the name has none.
 [[nodiscard]] std::optional<ProjectionMode> projectionFromFileNameTags(
     std::string_view fileName, unsigned width, unsigned height);

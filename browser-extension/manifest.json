@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "DK2'de aç",
+  "version": "1.0.0",
+  "description": "Açık video sayfasını, sitenin çerezleriyle birlikte DK2 360 VR Player'a gönderir.",
+  "permissions": ["cookies", "scripting", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "DK2'de aç"
+  }
+}

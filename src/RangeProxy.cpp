@@ -154,10 +154,31 @@ public:
                         if (const wchar_t* slash = std::wcschr(contentRange, L'/')) {
                             *totalLength = std::wcstoull(slash + 1, nullptr, 10);
                         }
+                    } else if (status == 200) {
+                        // No range support: the whole file, so its length.
+                        wchar_t contentLength[32] {};
+                        DWORD lengthSize = sizeof(contentLength);
+                        if (WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH,
+                                WINHTTP_HEADER_NAME_BY_INDEX, contentLength, &lengthSize,
+                                WINHTTP_NO_HEADER_INDEX)) {
+                            *totalLength = std::wcstoull(contentLength, nullptr, 10);
+                        }
                     }
                 }
                 std::vector<char> buffer(64 * 1024);
-                const std::uint64_t wanted = last - first + 1;
+                // A server without range support answers 200 with the file
+                // from byte 0; skip up to the requested start so the relayed
+                // bytes are still the right ones.
+                std::uint64_t skip = status == 200 ? first : 0;
+                while (skip > 0) {
+                    DWORD read = 0;
+                    const DWORD want = static_cast<DWORD>((std::min)(skip, static_cast<std::uint64_t>(buffer.size())));
+                    if (!WinHttpReadData(request, buffer.data(), want, &read) || read == 0) {
+                        break;
+                    }
+                    skip -= read;
+                }
+                const std::uint64_t wanted = skip == 0 ? last - first + 1 : 0;
                 while (delivered < wanted) {
                     DWORD read = 0;
                     if (!WinHttpReadData(request, buffer.data(), static_cast<DWORD>(buffer.size()), &read)

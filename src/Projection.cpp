@@ -254,6 +254,36 @@ std::optional<ProjectionMode> projectionFromFrameLayout(const FrameLayoutGuess g
     }
 }
 
+std::optional<ProjectionMode> projectionFromPlayerFormat(const std::string_view format)
+{
+    if (format.empty()) {
+        return std::nullopt;
+    }
+    const std::vector<std::string> tokens = fileNameTokens(format);
+    if (hasAnyToken(tokens, {"eac", "cubemap"})) {
+        return ProjectionMode::CubemapEac;
+    }
+    const bool half = hasAnyToken(tokens, {"180", "vr180", "half"});
+    const bool full = hasAnyToken(tokens, {"360", "vr360"});
+    const bool sideBySide = hasAnyToken(tokens, {"lr", "rl", "sbs", "3dh", "leftright"});
+    const bool topBottom = hasAnyToken(tokens, {"tb", "bt", "ou", "3dv", "topbottom"});
+    if (half) {
+        // Top/bottom VR180 is not a mode of its own; side-by-side is the norm.
+        return sideBySide || hasAnyToken(tokens, {"stereo"}) ? ProjectionMode::Fisheye180Sbs
+                                                             : ProjectionMode::Fisheye180;
+    }
+    if (topBottom) {
+        return ProjectionMode::StereoTopBottom;
+    }
+    if (sideBySide) {
+        return ProjectionMode::StereoLeftRight;
+    }
+    if (full) {
+        return ProjectionMode::Mono360;
+    }
+    return std::nullopt;
+}
+
 std::optional<ProjectionMode> projectionFromFileNameTags(
     const std::string_view fileName, const unsigned width, const unsigned height)
 {
